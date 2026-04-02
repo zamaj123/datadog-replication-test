@@ -4,6 +4,7 @@ All agents working in this repo must follow these rules.
 
 ## Global rules
 - Do not edit files outside your assigned area unless the task explicitly requires it.
+- Before starting new work, ensure your branch includes the latest changes from the integration branch.
 - Before coding, restate:
   1. your objective
   2. files you plan to edit
