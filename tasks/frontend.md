@@ -10,6 +10,7 @@ Design and implement the observability UI.
 - [x] Log explorer concept — `docs/frontend-design.md` §5
 - [x] Trace exploration concept — `docs/frontend-design.md` §6
 - [x] API requirements for frontend — `docs/frontend-design.md` §7–8
+- [x] Contract alignment to `INTERFACES.md` — `docs/frontend-design.md`
 
 ## Boundaries
 Allowed: frontend app, UI components, page flows, client-side state
@@ -18,14 +19,15 @@ Not allowed: backend storage internals, ingestion pipeline implementation
 ## Required coordination
 Must depend on documented query APIs and shared field names.
 
-## Blocking open questions (see `docs/frontend-design.md` §9)
-1. Max time window for log/trace queries before forced pagination
-2. Valid metric rollup intervals (server-side or client-specified enum)
-3. How env values are enumerated (dedicated endpoint vs. derived)
-4. Structured log attribute field naming convention (flat vs. nested)
-5. Trace status values: OK/ERROR only, or UNSET included
-6. Pagination model: cursor-based confirmed?
-7. `GET /api/v1/services` — will this endpoint be implemented?
+## Contract decisions adopted from `INTERFACES.md`
+1. Query params use `start` and `end`, not `from` and `to`
+2. Canonical filters use `environment` and `service_name`
+3. Environments come from `GET /api/v1/environments`
+4. Metrics use `GET /api/v1/metrics/names` and `GET /api/v1/metrics/query`
+5. Logs use `severity_text`, `severity_number`, and `log_id`
+6. Traces use lowercase `status`, `duration_ns`, and `root_service_name`
+7. Pagination is cursor-based with `cursor` and `next_cursor`
+8. Service summaries come from `GET /api/v1/services` and `GET /api/v1/services/:service_name/summary`
 
 ## Status
-Phase 1 design complete. Pending cross-agent review of API contracts before Phase 3 implementation.
+Phase 1 design updated to conform to the finalized cross-subsystem contract. Ready for Phase 3 frontend implementation when application code is introduced.
