@@ -5,6 +5,7 @@ Design and implement storage and query foundations for metrics, logs, and traces
 
 ## Deliverables
 - [x] Storage architecture proposal — `docs/storage-design.md`
+- [x] Implementation scaffold plan — `docs/storage-implementation-plan.md`
 - [x] Data model and indexing strategy — `docs/storage-design.md` §5.4–§5.8
 - [x] Query API contract — `docs/storage-design.md` §5.7
 - [x] Retention assumptions — `docs/storage-design.md` §5.9
