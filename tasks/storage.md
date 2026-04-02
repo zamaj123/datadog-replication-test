@@ -5,21 +5,21 @@ Design and implement storage and query foundations for metrics, logs, and traces
 
 ## Deliverables
 - [x] Storage architecture proposal — `docs/storage-design.md`
-- [x] Data model and indexing strategy — `docs/storage-design.md` §5.3–5.7
-- [x] Query API contract — `docs/storage-design.md` §5.9
-- [x] Retention assumptions — `docs/storage-design.md` §5.8
-- [x] Ingestion contract requirements — `docs/storage-design.md` §5.10
-- [x] Frontend/alerts contract requirements — `docs/storage-design.md` §5.11
+- [x] Implementation scaffold plan — `docs/storage-implementation-plan.md`
+- [x] Data model and indexing strategy — `docs/storage-design.md` §5.4–§5.8
+- [x] Query API contract — `docs/storage-design.md` §5.7
+- [x] Retention assumptions — `docs/storage-design.md` §5.9
+- [x] Ingestion contract requirements — `docs/storage-design.md` §5.2 and §5.10
+- [x] Frontend/alerts contract requirements — `docs/storage-design.md` §5.7 and §5.10
 - [ ] Implementation (Phase 2)
 
 ## Status
-Design phase complete. Awaiting ingestion agent review of §5.10 (inbound contract) before implementation.
+Design updated to conform to `INTERFACES.md`. Storage-owned contract drift removed from `docs/storage-design.md`. Implementation remains pending.
 
 ## Boundaries
 Allowed: schemas, storage services, indexes, query interfaces
 Not allowed: frontend UI, telemetry collection logic except schema alignment
 
 ## Required coordination
-- Ingestion agent must confirm §5.10 contract requirements before deep implementation
-- Alerts agent must review §5.11 and confirm whether a `/logs/count` endpoint is needed (Open Issue #1)
-- Ingestion agent to coordinate on ClickHouse connection env var naming (Open Issue #6)
+- No storage-side contract redesign remains open; `INTERFACES.md` is the authority for cross-subsystem behavior.
+- Implementation coordination remains for ingestion write behavior and alerts state integration during Phase 2.

@@ -60,7 +60,16 @@ Storage does not own:
 - SDK payload normalization
 - frontend route structure
 
----
+### 5.3 Canonical Identity and Time Model
+
+Storage stores the canonical top-level identity fields from `INTERFACES.md` on every signal table:
+
+| Field | ClickHouse type | Notes |
+|---|---|---|
+| `service_name` | `LowCardinality(String)` | Required, non-empty at ingestion boundary |
+| `environment` | `LowCardinality(String)` | Required, non-empty at ingestion boundary |
+| `host` | `LowCardinality(String)` | Required in storage rows; `""` when absent |
+| `version` | `LowCardinality(String)` | Required in storage rows; `""` when absent |
 
 ## 6. Engine Selection
 
@@ -74,7 +83,7 @@ Storage does not own:
 
 Redis is optional and deferred. Do not introduce it in Phase 2 unless query pressure proves it necessary.
 
----
+Materialized views populate these rollups from `metrics`. Storage selects raw data, `metrics_1m`, or `metrics_1h` based on the canonical `step` auto-selection rules in `INTERFACES.md`.
 
 ## 7. ClickHouse Schema Strategy
 
@@ -131,7 +140,13 @@ Use ClickHouse materialized views for:
 
 Rollups should be internal optimization tables. The external API must still expose only the canonical endpoint shapes from `INTERFACES.md`.
 
----
+- Auth uses `X-Api-Key` and shares the same deployment key as ingestion.
+- Time range params are `start` and `end`, both required where defined.
+- Time range semantics are `[start, end)`.
+- Response timestamps are ISO 8601 strings with millisecond precision.
+- Status values are lowercase throughout: `ok`, `error`, `unset`.
+- Pagination is cursor-based with `next_cursor`; offset pagination is not supported.
+- Error responses use `{ "error": "...", "code": "bad_request" }`.
 
 ## 8. Query API Architecture
 
@@ -251,7 +266,7 @@ PostgreSQL should store:
 
 PostgreSQL should not become a second telemetry store.
 
----
+`active_alert_count` is read from alert monitor state in PostgreSQL and counts monitors in `alerting` or `no_data` scoped to the service and optional environment.
 
 ## 11. Retention and Operations
 

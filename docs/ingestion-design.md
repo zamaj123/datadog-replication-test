@@ -74,7 +74,7 @@ Non-responsibilities:
 - `trace_index` management
 - dashboard or frontend concerns
 
----
+### 5.2 Write Architecture
 
 ## 6. Internal Pipeline
 
@@ -137,7 +137,7 @@ Key implementation notes:
 - normalization is shared across all routes
 - ClickHouse writes are isolated from HTTP handling
 
----
+Batch write rules:
 
 ## 8. Request Handling Rules
 
@@ -161,7 +161,11 @@ Key implementation notes:
 - On overflow, drop oldest rows as required by `INTERFACES.md`
 - Retries are flush-level, not per-row
 
----
+- Max 20 key-value pairs.
+- Keys match `[a-z_][a-z0-9_.]*`.
+- Keys max 64 chars.
+- Values max 256 chars.
+- Ingestion rejects metrics with malformed tag keys.
 
 ## 9. ClickHouse Write Design
 
@@ -197,7 +201,7 @@ The ingestion service should not write to `trace_index`.
   - flush failures
   - rejected event count
 
----
+`index` is the zero-based position of the event in the submitted array.
 
 ## 10. Canonical Field Mapping
 

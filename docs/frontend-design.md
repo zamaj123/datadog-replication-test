@@ -119,7 +119,10 @@ Keep the existing page structure:
 
 The route parameter should be treated as `service_name`, even if the URL segment stays `/services/:service_name`.
 
----
+- `service_name`
+- `environment`
+- `last_seen`
+- `active_alert_count`
 
 ## 8. Data Fetching
 
@@ -139,7 +142,8 @@ Query keys should include:
 - `environment`
 - endpoint-specific filters
 
----
+- metric picker from `GET /api/v1/metrics/names?service_name=...&environment=...`
+- one or more charts backed by `GET /api/v1/metrics/query`
 
 ## 9. API Integration Rules
 

@@ -21,21 +21,25 @@ Must define contracts with storage before deep implementation.
 
 ### Completed
 - [x] Subsystem design written to `docs/ingestion-design.md`
-  - Common identity/resource model defined
-  - Payload shapes for metrics, logs, and traces defined (OpenTelemetry-aligned, HTTP JSON)
-  - Service boundaries and major components documented (gateway, parsers, identity normalizer, validation pipeline, storage forwarder)
-  - Proposed module/file structure (`ingestion/cmd`, `internal/`, `pkg/schema/`)
-  - Validation behavior and HTTP response codes specified
-  - Client SDK/agent transport expectations documented
-  - 7 open questions raised for Storage agent (S1–S7)
-  - 5 open questions raised for Frontend agent (F1–F5)
+  - Canonical top-level identity fields aligned to `INTERFACES.md`
+  - `/v1` ingestion API semantics aligned, including auth, partial-batch behavior, and indexed error responses
+  - Metric, log, and span write shapes aligned to the canonical ingestion to storage schemas
+  - Histogram expansion behavior documented using per-bucket rows plus `_count` and `_sum`
+  - Direct ClickHouse HTTP write path documented with batching and in-memory buffering rules
+  - Old conflicting assumptions removed (`resource`-only storage boundary, storage write API, `summary` metrics, trace `events`/`links`, millisecond storage timestamps)
+  - Follow-up review alignment completed against `docs/review-alignment.md` ingestion findings without changing the contract in `INTERFACES.md`
+- [x] Implementation approach proposed in `docs/ingestion-implementation-plan.md`
+  - Go selected as the runtime and language for the first ingestion service implementation
+  - Minimal project structure defined under `ingestion/`
+  - Single-process HTTP server shape defined for `/v1` ingestion routes
+  - Metrics-first implementation slice defined without changing shared contracts
+  - Code location in this repo defined for future ingestion implementation work
 
 ### Blocked on
-- Storage agent: must answer S1–S7 before `forwarder/storage_client.go` can be implemented
-- Frontend agent: F1–F5 review requested
+- No ingestion-specific contract blockers remain for Phase 2 design work; `INTERFACES.md` is the authority for implementation.
 
-### Next steps (after storage contract is agreed)
-- Implement `pkg/schema` types
+### Next steps
+- Implement canonical ingestion schema types and normalization helpers
 - Implement signal parsers + validators with unit tests
-- Implement storage forwarder against agreed write API
-- End-to-end test with Node.js OTel SDK
+- Implement the ClickHouse batch writer using HTTP `FORMAT JSONEachRow`
+- End-to-end test with a Node.js OTel emitter and canonical row verification
