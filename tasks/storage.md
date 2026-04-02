@@ -5,11 +5,11 @@ Design and implement storage and query foundations for metrics, logs, and traces
 
 ## Deliverables
 - [x] Storage architecture proposal — `docs/storage-design.md`
-- [x] Data model and indexing strategy — `docs/storage-design.md` §5.3–5.7
-- [x] Query API contract — `docs/storage-design.md` §5.6
-- [x] Retention assumptions — `docs/storage-design.md` §5.8
-- [x] Ingestion contract requirements — `docs/storage-design.md` §5.9
-- [x] Frontend/alerts contract requirements — `docs/storage-design.md` §5.6 and §5.9
+- [x] Data model and indexing strategy — `docs/storage-design.md` §5.4–§5.8
+- [x] Query API contract — `docs/storage-design.md` §5.7
+- [x] Retention assumptions — `docs/storage-design.md` §5.9
+- [x] Ingestion contract requirements — `docs/storage-design.md` §5.2 and §5.10
+- [x] Frontend/alerts contract requirements — `docs/storage-design.md` §5.7 and §5.10
 - [ ] Implementation (Phase 2)
 
 ## Status
