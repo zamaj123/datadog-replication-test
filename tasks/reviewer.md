@@ -126,3 +126,38 @@ Prospective review based on standard observability platform patterns. Superseded
   - Frontend still targets `from`/`to`, old endpoint paths, old response keys, and keeps resolved contract items as open questions.
   - Alerts still defines a divergent monitor/state model, a custom query contract, old telemetry field names, and non-canonical alerts endpoint paths.
 - No further contract redesign was proposed. The remaining work is to update subsystem docs so they faithfully reflect `INTERFACES.md`.
+
+### Phase 2c — Unified implementation replacement proposal (2026-04-02)
+
+**Output:** `docs/review-node-typescript-architecture.md`
+
+**Summary of findings:**
+
+- Current integration status is stable at the contract layer but still fragmented at the implementation-design layer.
+- Ingestion, storage, and frontend still describe different implementation directions and should not be used as-is for execution planning.
+- Proposed a single reviewer-owned replacement architecture using:
+  - Node.js 22 + TypeScript across ingestion, query-api, and web
+  - Fastify for ingestion and query services
+  - React + Vite for the frontend
+  - shared Zod-backed contract types
+  - direct ClickHouse writes from ingestion
+  - a dedicated Node.js query API over ClickHouse and PostgreSQL
+- The proposal is intended to replace the implementation ideas in the ingestion, storage, and frontend docs without changing `INTERFACES.md`.
+
+### Phase 2d — Subsystem implementation docs replaced with aligned Node/TypeScript guidance (2026-04-02)
+
+**Outputs:**
+
+- `docs/ingestion-design.md`
+- `docs/storage-design.md`
+- `docs/frontend-design.md`
+
+**Summary of findings:**
+
+- Replaced the stale implementation sections in the ingestion, storage, and frontend docs rather than deleting the files outright.
+- Preserved those subsystem files as the entry points for their areas, but rewrote them so they now match the reviewer architecture and `INTERFACES.md`.
+- Removed the prior incorrect implementation assumptions, including:
+  - storage write API between ingestion and storage
+  - Go-style ingestion module layout
+  - non-canonical query paths and params
+  - stale frontend aliases such as `from` / `to`, `env`, `service`, and `level`

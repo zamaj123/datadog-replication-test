@@ -1,120 +1,165 @@
 # Ingestion Subsystem Design
 
 **Agent:** Ingestion  
-**Stage:** Shared parallel design  
+**Stage:** Phase 2 implementation design  
 **Status:** Aligned to `INTERFACES.md`
 
 ---
 
 ## 1. Objective
 
-Align the ingestion subsystem design to the source-of-truth contracts in `INTERFACES.md` without changing those contracts.
+Implement a Node.js + TypeScript ingestion service that accepts metrics, logs, and traces, normalizes them to the canonical event shapes in `INTERFACES.md`, and writes them directly to ClickHouse.
+
+`INTERFACES.md` remains the source of truth for all external and cross-subsystem contracts. This document only defines how ingestion should be implemented.
 
 ---
 
 ## 2. Plan
 
-1. Accept telemetry on the `/v1` ingestion API.
-2. Normalize incoming OTel resource attributes to the canonical top-level identity fields.
-3. Validate metric, log, and span events against the canonical ingestion-to-storage schemas.
-4. Write accepted rows directly to ClickHouse over HTTP using batched `JSONEachRow`.
-5. Return partial-batch acceptance results exactly as defined in `INTERFACES.md`.
+1. Build one Fastify service exposing `/v1/metrics`, `/v1/logs`, and `/v1/traces`
+2. Authenticate every request using `X-Api-Key`
+3. Normalize incoming OTel-style payloads into canonical top-level fields
+4. Validate, expand, and batch rows per signal
+5. Write directly to ClickHouse HTTP using `FORMAT JSONEachRow`
 
 ---
 
 ## 3. Files to Change
 
 - `docs/ingestion-design.md`
+- `tasks/ingestion.md`
 
 ---
 
 ## 4. Assumptions
 
-- `INTERFACES.md` is authoritative for all ingestion-facing and ingestion-to-storage contracts.
-- This document only describes ingestion-owned behavior.
-- Any prior ingestion wording that conflicts with `INTERFACES.md` is superseded by `INTERFACES.md`.
+- Runtime is Node.js 22 LTS with TypeScript strict mode.
+- Fastify is used for the HTTP server.
+- Shared request and event schemas are defined in a TypeScript contracts package and derived from `INTERFACES.md`.
+- Ingestion writes directly to ClickHouse. There is no storage write API service.
+- OTel-compatible clients may still submit `resource` blocks and millisecond timestamps, but ingestion owns conversion to the canonical ingestion to storage shape.
 
 ---
 
-## 5. Implementation
+## 5. Runtime Architecture
 
-### 5.1 Canonical Identity Fields
+Single service:
 
-Every forwarded metric row, log row, and span row carries these top-level fields:
+```text
+instrumented app / SDK
+  -> ingestion gateway
+  -> normalization + validation pipeline
+  -> in-memory signal buffers
+  -> ClickHouse HTTP INSERT
+```
 
-| Field | Type | Required | Constraints |
-|---|---|---|---|
-| `service_name` | string | yes | Non-empty. Max 256 chars. |
-| `environment` | string | yes | Non-empty. Max 64 chars. |
-| `host` | string | no | `""` when absent. Never `null`. |
-| `version` | string | no | `""` when absent. Never `null`. |
+Responsibilities:
 
-Timestamp is a separate required field per schema and is always Unix nanoseconds as `int64` at the ingestion-to-storage boundary.
+- route handling
+- API key authentication
+- request parsing
+- resource attribute normalization
+- signal-specific validation
+- histogram expansion
+- severity normalization
+- timestamp conversion
+- span duration calculation
+- partial-batch acceptance / rejection accounting
+- buffered ClickHouse writes
 
-#### OTel Resource Attribute Mapping
+Non-responsibilities:
 
-Ingestion maps these OTel resource attributes before forwarding:
-
-| OTel resource attribute | Canonical field |
-|---|---|
-| `service.name` | `service_name` |
-| `deployment.environment` | `environment` |
-| `host.name` | `host` |
-| `service.version` | `version` |
-
-Rules:
-
-- Fields are not nested inside a `resource` block at the ingestion-to-storage boundary.
-- Any OTel resource attribute not listed above is discarded from the resource block.
-- Signal-level attributes are passed through unchanged subject to each signal schema.
-- Ingestion rejects any event where `service_name` or `environment` is absent or empty after normalization.
-- `host` and `version` default to `""`.
+- query APIs
+- trace list materialization
+- `trace_index` management
+- dashboard or frontend concerns
 
 ### 5.2 Write Architecture
 
-Ingestion writes directly to ClickHouse using the ClickHouse HTTP interface with `FORMAT JSONEachRow`. There is no intermediate storage write API service.
+## 6. Internal Pipeline
+
+Every request should pass through these steps:
+
+1. Validate `X-Api-Key`
+2. Parse JSON body
+3. Validate request envelope shape
+4. Normalize `resource` attributes into:
+   - `service_name`
+   - `environment`
+   - `host`
+   - `version`
+5. Validate canonical required fields
+6. Convert SDK timestamps from milliseconds to nanoseconds when needed
+7. Apply signal-specific transforms:
+   - metrics: expand histograms into per-bucket rows plus `_count` and `_sum`
+   - logs: generate `log_id`, map `severity_number` and `severity_text`, stringify attribute values
+   - traces: compute `duration_ns`, normalize `status`, validate `end_time >= start_time`
+8. Append valid rows to per-table buffers
+9. Return `202` or `400` with accepted / rejected counts per `INTERFACES.md`
+10. Flush buffers to ClickHouse every 500ms or when 1000 rows accumulate
+
+---
+
+## 7. Module Layout
 
 ```text
-SDK -> Ingestion Gateway -> ClickHouse HTTP (INSERT ... FORMAT JSONEachRow)
+apps/ingestion/
+  src/
+    server/
+      app.ts
+      plugins.ts
+    routes/
+      metrics.ts
+      logs.ts
+      traces.ts
+    pipeline/
+      handle-metrics.ts
+      handle-logs.ts
+      handle-traces.ts
+      result.ts
+    normalization/
+      resource.ts
+      timestamps.ts
+      severity.ts
+      attributes.ts
+    clickhouse/
+      writer.ts
+      buffer.ts
+      sql.ts
+    config/
+      env.ts
 ```
 
-ClickHouse connection config:
+Key implementation notes:
 
-| Variable | Description |
-|---|---|
-| `CLICKHOUSE_HOST` | Hostname of ClickHouse instance |
-| `CLICKHOUSE_PORT` | HTTP port, default `8123` |
-| `CLICKHOUSE_DATABASE` | Database name |
-| `CLICKHOUSE_USER` | Username |
-| `CLICKHOUSE_PASSWORD` | Password |
+- route handlers stay thin
+- pipeline modules own signal behavior
+- normalization is shared across all routes
+- ClickHouse writes are isolated from HTTP handling
 
 Batch write rules:
 
-- Ingestion buffers and flushes to ClickHouse in batches of 1000 rows or every 500ms, whichever comes first.
-- Individual row inserts are not used.
-- `trace_index` is populated by a ClickHouse materialized view on the `spans` table.
-- Ingestion has no responsibility for `trace_index`.
+## 8. Request Handling Rules
 
-### 5.3 Metric Event Schema
+### 8.1 Authentication
 
-#### Gauge and Counter
+- All ingestion endpoints require `X-Api-Key`
+- Key value comes from `INGESTION_API_KEY`
+- Missing or invalid key returns `401`
 
-One row per data point.
+### 8.2 Partial Batch Behavior
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `service_name` | string | yes | From 5.1 |
-| `environment` | string | yes | From 5.1 |
-| `host` | string | yes | `""` if absent |
-| `version` | string | yes | `""` if absent |
-| `timestamp` | int64 | yes | Unix nanoseconds |
-| `name` | string | yes | Dot-namespaced |
-| `type` | string | yes | `"gauge"` or `"counter"` |
-| `unit` | string | no | `""` if absent |
-| `value` | float64 | yes | Counter values must be `>= 0` |
-| `tags` | object | yes | `Map<string,string>`, `{}` if no tags |
+- Valid events in the submitted array proceed even if some are rejected
+- Response bodies must include `accepted` and `rejected`
+- Validation failures return `400` with per-item errors
+- Temporary ClickHouse unavailability can return `503`
 
-Tag constraints:
+### 8.3 Buffering
+
+- Buffer rows in memory only
+- Maximum in-memory buffer is 10,000 rows across pending writes
+- On overflow, drop oldest rows as required by `INTERFACES.md`
+- Retries are flush-level, not per-row
 
 - Max 20 key-value pairs.
 - Keys match `[a-z_][a-z0-9_.]*`.
@@ -122,183 +167,70 @@ Tag constraints:
 - Values max 256 chars.
 - Ingestion rejects metrics with malformed tag keys.
 
-#### Histogram
+## 9. ClickHouse Write Design
 
-The SDK may send a histogram object to the ingestion gateway. Ingestion explodes it into multiple rows before writing to ClickHouse. `summary` type is not supported in Phase 2.
+### 9.1 Connection
 
-SDK histogram payload handled by ingestion:
+Use these environment variables:
 
-```json
-{
-  "name": "http.request.duration",
-  "type": "histogram",
-  "unit": "ms",
-  "buckets": [
-    { "upper_bound": 50, "count": 10 },
-    { "upper_bound": 100, "count": 25 },
-    { "upper_bound": 250, "count": 45 },
-    { "upper_bound": 500, "count": 47 }
-  ],
-  "count": 47,
-  "sum": 4230.5
-}
-```
+- `CLICKHOUSE_HOST`
+- `CLICKHOUSE_PORT`
+- `CLICKHOUSE_DATABASE`
+- `CLICKHOUSE_USER`
+- `CLICKHOUSE_PASSWORD`
 
-Rows written by ingestion:
+### 9.2 Insert Strategy
 
-| Row | `name` | `type` | `value` | `tags` |
-|---|---|---|---|---|
-| Bucket `<= 50` | `http.request.duration` | `histogram` | `10` | merged event tags plus `"le": "50"` |
-| Bucket `<= 100` | `http.request.duration` | `histogram` | `25` | merged event tags plus `"le": "100"` |
-| Bucket `<= 250` | `http.request.duration` | `histogram` | `45` | merged event tags plus `"le": "250"` |
-| Bucket `<= 500` | `http.request.duration` | `histogram` | `47` | merged event tags plus `"le": "500"` |
-| Count | `http.request.duration_count` | `counter` | `47` | merged event tags only |
-| Sum | `http.request.duration_sum` | `counter` | `4230.5` | merged event tags only |
+Write directly to ClickHouse using HTTP `INSERT ... FORMAT JSONEachRow`.
 
-Rules:
+Recommended tables:
 
-- All histogram rows share the same `service_name`, `environment`, `host`, `version`, `timestamp`, and `unit` as the parent event.
-- The `le` tag value is the string representation of `upper_bound`.
-- There is no `+Inf` row.
-- The count row replaces `+Inf`.
+- `metrics`
+- `logs`
+- `spans`
 
-### 5.4 Log Event Schema
+The ingestion service should not write to `trace_index`.
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `log_id` | string | yes | ULID generated by ingestion |
-| `service_name` | string | yes | From 5.1 |
-| `environment` | string | yes | From 5.1 |
-| `host` | string | yes | `""` if absent |
-| `version` | string | yes | `""` if absent |
-| `timestamp` | int64 | yes | Unix nanoseconds |
-| `severity_number` | int32 | yes | `0` if unknown |
-| `severity_text` | string | yes | Uppercased original string, `""` if absent |
-| `message` | string | yes | Max 65536 bytes |
-| `trace_id` | string | no | 32 lowercase hex chars, `""` if absent |
-| `span_id` | string | no | 16 lowercase hex chars, `""` if absent |
-| `attributes` | object | yes | `Map<string,string>`, `{}` if no attributes, max 50 pairs |
+### 9.3 Failure Handling
 
-Rules:
-
-- Ingestion generates one ULID per log record before forwarding.
-- `message` is truncated with `[truncated]` suffix if it exceeds 65536 bytes.
-- `trace_id` and `span_id` must be valid hex strings when present.
-- Missing `trace_id` or `span_id` is stored as `""`.
-- Attribute values are stored as strings. Ingestion converts non-string values to string representation before forwarding.
-
-Severity mapping:
-
-| Incoming string (case-insensitive) | `severity_number` | `severity_text` |
-|---|---|---|
-| `TRACE`, `trace`, `TRC` | `1` | `TRACE` |
-| `DEBUG`, `debug`, `DBG` | `5` | `DEBUG` |
-| `INFO`, `info`, `INFORMATION` | `9` | `INFO` |
-| `WARN`, `warn`, `WARNING` | `13` | `WARN` |
-| `ERROR`, `error`, `ERR` | `17` | `ERROR` |
-| `FATAL`, `fatal`, `CRITICAL`, `CRIT` | `21` | `FATAL` |
-| anything else | `0` | original string, uppercased |
-
-### 5.5 Trace Span Schema
-
-One row per span. Ingestion accepts individual spans, not assembled traces.
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `service_name` | string | yes | From 5.1 |
-| `environment` | string | yes | From 5.1 |
-| `host` | string | yes | `""` if absent |
-| `version` | string | yes | `""` if absent |
-| `trace_id` | string | yes | 32 lowercase hex chars |
-| `span_id` | string | yes | 16 lowercase hex chars |
-| `parent_span_id` | string | yes | 16 lowercase hex chars, `""` for root span |
-| `name` | string | yes | Operation name |
-| `kind` | string | yes | `"internal"`, `"server"`, `"client"`, `"producer"`, or `"consumer"` |
-| `start_time` | int64 | yes | Unix nanoseconds |
-| `end_time` | int64 | yes | Unix nanoseconds, must be `>= start_time` |
-| `duration_ns` | int64 | yes | Computed by ingestion |
-| `status` | string | yes | `"ok"`, `"error"`, or `"unset"` |
-| `status_message` | string | yes | `""` if absent |
-| `attributes` | object | yes | `Map<string,string>`, `{}` if no attributes, max 128 pairs |
-
-Rules:
-
-- Ingestion computes `duration_ns = end_time - start_time`.
-- If the SDK sends `duration_ms`, ingestion converts `duration_ns = duration_ms * 1_000_000`.
-- `duration_ms` is not forwarded to storage.
-- `parent_span_id == ""` identifies a root span.
-- Ingestion rejects spans where `end_time < start_time`.
-- Validation failures are partial-batch rejections for the affected span.
-
-Status mapping:
-
-- `STATUS_CODE_OK` -> `ok`
-- `STATUS_CODE_ERROR` -> `error`
-- `STATUS_CODE_UNSET` or absent -> `unset`
-
-### 5.6 Ingestion External API
-
-Base path: `/v1`  
-Auth: `X-Api-Key: <key>` on all requests. Missing or invalid key returns `401`.  
-Config: one deployment-wide API key via `INGESTION_API_KEY`  
-Content-Type: `application/json`
-
-Endpoints:
-
-| Method | Path | Request body | Success response |
-|---|---|---|---|
-| `POST` | `/v1/metrics` | `{ "metrics": [MetricEvent, ...] }` | `202` |
-| `POST` | `/v1/logs` | `{ "logs": [LogEvent, ...] }` | `202` |
-| `POST` | `/v1/traces` | `{ "spans": [SpanEvent, ...] }` | `202` |
-
-Acknowledgment semantics:
-
-- `202` means the payload has been received and accepted for forwarding.
-- `202` does not mean the data has already been written to ClickHouse.
-- If ClickHouse is unavailable, ingestion buffers in memory up to 10,000 rows, drops oldest on overflow, and continues attempting to flush.
-- Callers must implement retry with exponential backoff on `503`.
-
-Partial batch behavior:
-
-- Valid events in a request are processed even if some events are rejected.
-- The response body describes which events were rejected.
-
-Success response body:
-
-```json
-{ "accepted": 9, "rejected": 1 }
-```
-
-Validation error response body:
-
-```json
-{
-  "accepted": 8,
-  "rejected": 2,
-  "errors": [
-    { "index": 2, "field": "service_name", "reason": "required field is empty" },
-    { "index": 7, "field": "end_time", "reason": "end_time < start_time" }
-  ]
-}
-```
+- treat insert failure as a flush failure
+- keep buffered rows until retry or eviction
+- emit structured logs and internal metrics for:
+  - buffer depth
+  - flush latency
+  - flush failures
+  - rejected event count
 
 `index` is the zero-based position of the event in the submitted array.
 
-Timestamp conversion responsibility:
+## 10. Canonical Field Mapping
 
-- The ingestion gateway converts SDK-submitted millisecond timestamps to nanoseconds before forwarding to ClickHouse.
-- The ingestion-to-storage boundary always uses nanoseconds.
+Ingestion must normalize OTel resource attributes using the exact mapping in `INTERFACES.md`:
+
+| Incoming attribute | Canonical field |
+|---|---|
+| `service.name` | `service_name` |
+| `deployment.environment` | `environment` |
+| `host.name` | `host` |
+| `service.version` | `version` |
+
+Any implementation that forwards `resource`, `service.name`, `env`, or `service` across the ingestion to storage boundary is incorrect.
 
 ---
 
-## 6. Validation
+## 11. Validation
 
-- [ ] Confirm every ingestion field name, type, and rejection rule matches `INTERFACES.md`.
-- [ ] Confirm the document does not reintroduce a storage write API, nested identity fields at the storage boundary, unsupported `summary` metrics, or ingestion-owned `trace_index` behavior.
-- [ ] Confirm the external API section matches the `/v1` routes, auth header, partial-batch semantics, and response bodies in `INTERFACES.md`.
+- [ ] API key middleware returns `401` on missing or invalid keys
+- [ ] metric, log, and trace request schemas match `INTERFACES.md`
+- [ ] histogram expansion matches the canonical row format
+- [ ] logs generate `log_id` and canonical severity fields
+- [ ] spans compute `duration_ns` and reject `end_time < start_time`
+- [ ] batch flushing uses 1000 rows or 500ms
+- [ ] end-to-end test confirms direct ClickHouse writes
 
 ---
 
-## 7. Open Issues
+## 12. Open Issues
 
-- None in the ingestion design doc after alignment to `INTERFACES.md` and the ingestion findings in `docs/review-alignment.md`.
+- The implementation should use a shared contracts package so ingestion and query code cannot drift on field names.
+- If load increases materially, the next scaling step is separate ingestion replicas behind a load balancer, not a new write API.

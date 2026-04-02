@@ -1,17 +1,29 @@
 # Storage Design
 
+**Agent:** Storage  
+**Stage:** Phase 2 implementation design  
+**Status:** Aligned to `INTERFACES.md`
+
+---
+
 ## 1. Objective
 
-Define the storage-owned schema, indexing, retention, and query API design for metrics, logs, and traces so it conforms exactly to `INTERFACES.md`.
+Implement the storage layer as:
+
+1. ClickHouse and PostgreSQL schema ownership
+2. a Node.js + TypeScript query API that serves the canonical read endpoints in `INTERFACES.md`
+
+This document does not redefine contracts. `INTERFACES.md` remains authoritative.
 
 ---
 
 ## 2. Plan
 
-1. Use `INTERFACES.md` as the source of truth for all storage-facing contracts.
-2. Define ClickHouse tables and materialized views with canonical field names and nanosecond storage semantics.
-3. Define the storage query API surface exactly as consumed by frontend and alerts.
-4. Keep scope limited to storage-owned schemas, indexes, retention, and query behavior.
+1. Define the storage engines and owned schemas
+2. Define canonical ClickHouse table strategy
+3. Implement a Node.js query API over ClickHouse and PostgreSQL
+4. Enforce retention and pagination behavior in line with `INTERFACES.md`
+5. keep storage responsibility focused on schema and reads, not a separate write service
 
 ---
 
@@ -24,46 +36,29 @@ Define the storage-owned schema, indexing, retention, and query API design for m
 
 ## 4. Assumptions
 
-- Phase 2 storage is a single-node ClickHouse deployment plus PostgreSQL for non-timeseries metadata.
-- Ingestion writes directly to ClickHouse over HTTP using `FORMAT JSONEachRow`; storage does not own an intermediate write API.
-- `INTERFACES.md` is authoritative for field names, request parameters, response bodies, and retention policy.
-- Query responses expose ISO 8601 timestamps with millisecond precision even though ClickHouse stores nanosecond timestamps internally.
-- Service summary endpoints may read alert state written by alerts into PostgreSQL, but storage does not redesign alerts ownership or schemas here.
+- Runtime is Node.js 22 LTS with TypeScript strict mode.
+- Query API uses Fastify.
+- ClickHouse is the telemetry store for metrics, logs, spans, and trace summaries.
+- PostgreSQL stores metadata and later alert monitor state.
+- Ingestion writes directly to ClickHouse and does not call a storage write API.
 
 ---
 
-## 5. Implementation
+## 5. Storage Ownership
 
-### 5.1 Storage Engine Selection
+Storage owns:
 
-| Signal | Engine | Rationale |
-|---|---|---|
-| Metrics | ClickHouse | Columnar scans and rollups fit range aggregation workloads. |
-| Logs | ClickHouse | Append-heavy workload with time filtering, search, and retention TTLs. |
-| Traces | ClickHouse | Span storage, trace reconstruction, and trace summary materialization fit one analytical store. |
-| Metadata | PostgreSQL | Alert state and future service metadata remain relational, not timeseries. |
+- ClickHouse DDL
+- PostgreSQL DDL for metadata used by query responses
+- materialized views and rollups
+- `GET /api/v1/...` query endpoints
+- SQL tuning and retention policy
 
-The storage subsystem owns ClickHouse schemas, materialized views, query execution, and retention enforcement. Ingestion owns write batching and event normalization before rows reach ClickHouse.
+Storage does not own:
 
-### 5.2 Write Architecture
-
-Storage owns the ClickHouse schema at the ingestion-to-storage boundary defined in `INTERFACES.md`.
-
-- Ingestion writes directly to ClickHouse over the HTTP interface with `FORMAT JSONEachRow`.
-- There is no intermediate storage write API service.
-- Ingestion owns the ClickHouse write client.
-- Ingestion batches writes at 1000 rows or every 500ms, whichever comes first.
-- `trace_index` is populated by a ClickHouse materialized view on `spans`; ingestion has no `trace_index` write responsibility.
-
-Storage defines the ClickHouse connection environment variables consumed by ingestion:
-
-| Variable | Description |
-|---|---|
-| `CLICKHOUSE_HOST` | Hostname of ClickHouse instance |
-| `CLICKHOUSE_PORT` | HTTP port, default `8123` |
-| `CLICKHOUSE_DATABASE` | Database name |
-| `CLICKHOUSE_USER` | Username |
-| `CLICKHOUSE_PASSWORD` | Password |
+- telemetry intake endpoints
+- SDK payload normalization
+- frontend route structure
 
 ### 5.3 Canonical Identity and Time Model
 
@@ -76,210 +71,74 @@ Storage stores the canonical top-level identity fields from `INTERFACES.md` on e
 | `host` | `LowCardinality(String)` | Required in storage rows; `""` when absent |
 | `version` | `LowCardinality(String)` | Required in storage rows; `""` when absent |
 
-All event times are stored as `DateTime64(9, 'UTC')` in ClickHouse after ingestion converts nanosecond wire values into the table column type. Query responses convert these values to ISO 8601 strings with millisecond precision.
+## 6. Engine Selection
 
-### 5.4 Metrics Storage Schema
+| Concern | Engine | Purpose |
+|---|---|---|
+| metrics | ClickHouse | range scans, aggregation, rollups |
+| logs | ClickHouse | append-heavy search and correlation |
+| spans | ClickHouse | trace assembly and summary reads |
+| trace summaries | ClickHouse materialized view | fast trace list queries |
+| metadata | PostgreSQL | service metadata and later alert state joins |
 
-Metrics use canonical field names from `INTERFACES.md`: `name`, `type`, `unit`, `value`, and `tags`. Histogram points are stored as exploded bucket rows with the same schema as other metrics; bucket identity remains in `tags` (for example `le=0.5`).
-
-```sql
-CREATE TABLE metrics
-(
-    timestamp        DateTime64(9, 'UTC'),
-    service_name     LowCardinality(String),
-    environment      LowCardinality(String),
-    host             LowCardinality(String),
-    version          LowCardinality(String),
-    name             LowCardinality(String),
-    type             LowCardinality(String),
-    unit             LowCardinality(String),
-    value            Float64,
-    tags             Map(String, String)
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(timestamp)
-ORDER BY (service_name, environment, name, timestamp)
-TTL toDateTime(timestamp) + INTERVAL 30 DAY
-SETTINGS index_granularity = 8192;
-```
-
-Storage assumes ingestion already enforced the interface-level validation rules before rows reach ClickHouse. Query planning relies on these invariants:
-
-- `type` is one of `gauge`, `counter`, or `histogram`.
-- `tags` stores exact string pairs only; query filters are exact-match filters on tag values.
-- `name` is the canonical metric name also used by `/api/v1/metrics/query` and `/api/v1/metrics/names`.
-
-#### Rollup Tables
-
-Storage owns two rollup tiers required by `INTERFACES.md` retention:
-
-```sql
-CREATE TABLE metrics_1m
-(
-    timestamp        DateTime64(0, 'UTC'),
-    service_name     LowCardinality(String),
-    environment      LowCardinality(String),
-    host             LowCardinality(String),
-    version          LowCardinality(String),
-    name             LowCardinality(String),
-    type             LowCardinality(String),
-    unit             LowCardinality(String),
-    tags             Map(String, String),
-    count            UInt64,
-    sum_value        Float64,
-    min_value        Float64,
-    max_value        Float64,
-    avg_value        Float64,
-    p50_value        Float64,
-    p95_value        Float64,
-    p99_value        Float64
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(timestamp)
-ORDER BY (service_name, environment, name, timestamp)
-TTL toDateTime(timestamp) + INTERVAL 90 DAY
-SETTINGS index_granularity = 8192;
-
-CREATE TABLE metrics_1h
-(
-    timestamp        DateTime64(0, 'UTC'),
-    service_name     LowCardinality(String),
-    environment      LowCardinality(String),
-    host             LowCardinality(String),
-    version          LowCardinality(String),
-    name             LowCardinality(String),
-    type             LowCardinality(String),
-    unit             LowCardinality(String),
-    tags             Map(String, String),
-    count            UInt64,
-    sum_value        Float64,
-    min_value        Float64,
-    max_value        Float64,
-    avg_value        Float64,
-    p50_value        Float64,
-    p95_value        Float64,
-    p99_value        Float64
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(timestamp)
-ORDER BY (service_name, environment, name, timestamp)
-TTL toDateTime(timestamp) + INTERVAL 365 DAY
-SETTINGS index_granularity = 8192;
-```
+Redis is optional and deferred. Do not introduce it in Phase 2 unless query pressure proves it necessary.
 
 Materialized views populate these rollups from `metrics`. Storage selects raw data, `metrics_1m`, or `metrics_1h` based on the canonical `step` auto-selection rules in `INTERFACES.md`.
 
-### 5.5 Logs Storage Schema
+## 7. ClickHouse Schema Strategy
 
-Logs store the canonical schema including `log_id`, `severity_number`, `severity_text`, and optional trace correlation fields.
+### 7.1 Canonical Naming Rule
 
-```sql
-CREATE TABLE logs
-(
-    timestamp         DateTime64(9, 'UTC'),
-    log_id            String,
-    service_name      LowCardinality(String),
-    environment       LowCardinality(String),
-    host              LowCardinality(String),
-    version           LowCardinality(String),
-    severity_number   Int32,
-    severity_text     LowCardinality(String),
-    message           String,
-    trace_id          String,
-    span_id           String,
-    attributes        Map(String, String)
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(timestamp)
-ORDER BY (service_name, environment, timestamp, log_id)
-TTL toDateTime(timestamp) + INTERVAL 30 DAY
-SETTINGS index_granularity = 8192;
-```
+Actual table columns should stay as close as possible to the canonical names in `INTERFACES.md`.
 
-Indexes for common query paths:
+Preferred examples:
 
-```sql
-ALTER TABLE logs
-    ADD INDEX idx_logs_trace_id trace_id TYPE bloom_filter(0.01) GRANULARITY 1;
+- `service_name`
+- `environment`
+- `name`
+- `type`
+- `severity_number`
+- `severity_text`
+- `start_time`
+- `end_time`
+- `status`
 
-ALTER TABLE logs
-    ADD INDEX idx_logs_message message TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 4;
-```
+Avoid internal rename layers like:
 
-Storage treats `log_id` as an opaque stable identifier generated upstream. The query API exposes it unchanged.
+- `service`
+- `env`
+- `metric_name`
+- `metric_type`
+- `operation`
+- `status_code`
 
-### 5.6 Spans and Trace Index Schema
+Those names are a recurring source of drift and should not be used for new implementation.
 
-Spans store canonical fields from `INTERFACES.md`. Root detection remains `parent_span_id == ""` in storage rows. Query responses convert the root `parent_span_id` to `null` for trace detail responses.
+### 7.2 Tables
 
-```sql
-CREATE TABLE spans
-(
-    trace_id          String,
-    span_id           String,
-    parent_span_id    String,
-    service_name      LowCardinality(String),
-    environment       LowCardinality(String),
-    host              LowCardinality(String),
-    version           LowCardinality(String),
-    name              String,
-    kind              LowCardinality(String),
-    start_time        DateTime64(9, 'UTC'),
-    end_time          DateTime64(9, 'UTC'),
-    duration_ns       Int64,
-    status            LowCardinality(String),
-    status_message    String,
-    attributes        Map(String, String)
-)
-ENGINE = MergeTree()
-PARTITION BY toYYYYMMDD(start_time)
-ORDER BY (service_name, environment, start_time, trace_id, span_id)
-TTL toDateTime(start_time) + INTERVAL 30 DAY
-SETTINGS index_granularity = 8192;
-```
+Recommended tables:
 
-Trace list queries use a storage-owned materialized trace summary:
+- `metrics`
+- `metrics_1m`
+- `metrics_1h`
+- `logs`
+- `spans`
+- `trace_index`
 
-```sql
-CREATE TABLE trace_index
-(
-    trace_id            String,
-    root_service_name   LowCardinality(String),
-    root_name           String,
-    start_time          DateTime64(9, 'UTC'),
-    duration_ns         Int64,
-    span_count          UInt32,
-    status              LowCardinality(String),
-    environment         LowCardinality(String)
-)
-ENGINE = ReplacingMergeTree()
-PARTITION BY toYYYYMMDD(start_time)
-ORDER BY (root_service_name, environment, start_time, trace_id)
-TTL toDateTime(start_time) + INTERVAL 30 DAY;
-```
+### 7.3 Trace Summary Strategy
 
-`trace_index` is populated by a materialized view over `spans`, not by ingestion code. The materialized view derives:
+`trace_index` must be owned by storage and implemented as a ClickHouse materialized view derived from `spans`.
 
-- `root_service_name` and `root_name` from the root span.
-- `duration_ns` as the full trace duration.
-- `span_count` as total spans in the trace.
-- `status` as `error` when any span in the trace has `status = 'error'`, otherwise `ok`.
+Ingestion must not populate `trace_index`.
 
-Indexes for trace reconstruction:
+### 7.4 Rollups
 
-```sql
-ALTER TABLE spans
-    ADD INDEX idx_spans_trace_id trace_id TYPE bloom_filter(0.01) GRANULARITY 1;
+Use ClickHouse materialized views for:
 
-ALTER TABLE spans
-    ADD INDEX idx_spans_name name TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 4;
-```
+- 1-minute metric rollups
+- 1-hour metric rollups
 
-### 5.7 Query API Design
-
-Storage owns the `/api/v1` query API. The storage design must match `INTERFACES.md` exactly for paths, parameter names, response field names, pagination, and status values.
-
-#### Shared conventions
+Rollups should be internal optimization tables. The external API must still expose only the canonical endpoint shapes from `INTERFACES.md`.
 
 - Auth uses `X-Api-Key` and shares the same deployment key as ingestion.
 - Time range params are `start` and `end`, both required where defined.
@@ -289,290 +148,159 @@ Storage owns the `/api/v1` query API. The storage design must match `INTERFACES.
 - Pagination is cursor-based with `next_cursor`; offset pagination is not supported.
 - Error responses use `{ "error": "...", "code": "bad_request" }`.
 
-#### `GET /api/v1/metrics/query`
+## 8. Query API Architecture
 
-Storage accepts only the canonical parameters:
+Implement one dedicated Node.js service:
 
-| Parameter | Required | Notes |
-|---|---|---|
-| `start` | yes | ISO 8601 |
-| `end` | yes | ISO 8601 |
-| `name` | yes | Metric name |
-| `environment` | no | Exact filter |
-| `service_name` | no | Exact filter |
-| `step` | no | `1m`, `5m`, `15m`, `1h`, `6h`, `1d`, or omitted for auto |
-| `agg` | no | `avg`, `min`, `max`, `sum`, `count`, `p50`, `p95`, `p99` |
-| `group_by` | no | Comma-separated tag keys |
-| `filter[<key>]` | no | Exact tag filter |
-
-Response shape:
-
-```json
-{
-  "name": "http.request.duration",
-  "step": "1m",
-  "agg": "avg",
-  "truncated": false,
-  "series": [
-    {
-      "labels": { "service_name": "api-server", "http.method": "POST" },
-      "points": [
-        { "timestamp": "2026-04-02T09:00:00Z", "value": 143.2 }
-      ]
-    }
-  ]
-}
+```text
+browser / alerts
+  -> query-api
+  -> ClickHouse / PostgreSQL
 ```
 
-Behavior rules:
+### 8.1 Service Responsibilities
 
-- When `group_by` is omitted, `labels` contains only supplied filter dimensions.
-- When grouped series exceed the server cap of 100, storage sets `truncated: true`.
-- Step selection follows the `INTERFACES.md` ranges: raw for up to 3 hours, `1m` for 3 hours to 48 hours, `1h` for 48 hours to 2 weeks, and `1d` beyond 2 weeks.
+- validate query params with shared contracts
+- convert canonical filters into SQL
+- format timestamps as ISO 8601 strings
+- implement cursor-based pagination
+- set `truncated` flags consistently
+- join PostgreSQL metadata where required for service summary endpoints
 
-#### `GET /api/v1/metrics/names`
+### 8.2 Module Layout
 
-Supported params: `environment`, `service_name`.
-
-Response:
-
-```json
-{ "names": ["http.request.duration", "http.request.count"] }
+```text
+apps/query-api/
+  src/
+    server/
+      app.ts
+      plugins.ts
+    routes/
+      metrics.ts
+      logs.ts
+      traces.ts
+      services.ts
+      environments.ts
+    services/
+      metrics-query-service.ts
+      logs-query-service.ts
+      traces-query-service.ts
+      services-query-service.ts
+    repositories/
+      clickhouse-metrics.ts
+      clickhouse-logs.ts
+      clickhouse-traces.ts
+      postgres-services.ts
+    clickhouse/
+      client.ts
+      sql.ts
+    postgres/
+      pool.ts
+    config/
+      env.ts
 ```
 
-#### `GET /api/v1/logs`
+### 8.3 Endpoint Set
 
-Supported params: `start`, `end`, `environment`, `service_name`, `severity_min`, `search`, `trace_id`, `limit`, `cursor`, `count_only`. `limit` defaults to `100` and maxes at `1000`.
+Implement the exact canonical endpoints:
 
-Response shape:
+- `GET /api/v1/metrics/query`
+- `GET /api/v1/metrics/names`
+- `GET /api/v1/logs`
+- `GET /api/v1/logs/volume`
+- `GET /api/v1/traces`
+- `GET /api/v1/traces/:trace_id`
+- `GET /api/v1/services`
+- `GET /api/v1/services/:service_name/summary`
+- `GET /api/v1/environments`
 
-```json
-{
-  "logs": [
-    {
-      "log_id": "01HV4MXKPQ3ZTJR8FBVS9Y6D2",
-      "timestamp": "2026-04-02T09:05:13.412Z",
-      "severity_number": 17,
-      "severity_text": "ERROR",
-      "service_name": "api-server",
-      "environment": "production",
-      "host": "worker-1",
-      "message": "Connection refused to postgres at db:5432",
-      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-      "span_id": "00f067aa0ba902b7",
-      "attributes": { "db.system": "postgresql" }
-    }
-  ],
-  "next_cursor": null,
-  "total_matched": 1204,
-  "truncated": false
-}
-```
+Do not implement alternate public paths such as:
 
-When `count_only=true`, storage returns:
+- `/api/v1/logs/query`
+- `/api/v1/traces/query`
+- `/api/v1/traces/list`
+- `/api/v1/metrics`
+- `/api/v1/metrics/labels`
+- `/api/v1/correlate/trace`
 
-```json
-{ "count": 1204, "truncated": false }
-```
+---
 
-`total_matched` is an estimate. `truncated: true` means the result count exceeded an internal cap before reaching `end`.
+## 9. Query Service Rules
 
-#### `GET /api/v1/logs/volume`
+### 9.1 Authentication
 
-Supported params: `start`, `end`, `environment`, `service_name`, `step`.
+- all query endpoints require `X-Api-Key`
+- use the same deployment key model defined in `INTERFACES.md`
 
-Response:
+### 9.2 Time Range
 
-```json
-{
-  "step": "5m",
-  "buckets": [
-    {
-      "timestamp": "2026-04-02T09:00:00Z",
-      "count": 412,
-      "by_severity": {
-        "INFO": 380,
-        "ERROR": 20
-      }
-    }
-  ]
-}
-```
+- accept `start` and `end`
+- enforce `[start, end)` semantics
+- reject missing values with `400`
 
-#### `GET /api/v1/traces`
+### 9.3 Pagination
 
-Supported params: `start`, `end`, `environment`, `service_name`, `status`, `min_duration_ms`, `trace_id`, `limit`, `cursor`. `limit` defaults to `50` and maxes at `200`.
+- logs and traces use cursor-based pagination only
+- responses return `next_cursor`
+- offset-based pagination is not supported
 
-Response:
+### 9.4 Truncation
 
-```json
-{
-  "traces": [
-    {
-      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-      "root_service_name": "api-server",
-      "root_name": "POST /v1/checkout",
-      "start_time": "2026-04-02T09:05:10.100Z",
-      "duration_ns": 190000000,
-      "span_count": 8,
-      "status": "ok",
-      "environment": "production"
-    }
-  ],
-  "next_cursor": null
-}
-```
+- set `truncated: true` when server caps a result set
+- this behavior must be stable because alerts depends on it
 
-`duration_ns` is returned in nanoseconds. `status` is `error` if any span in the trace has `status == "error"`, otherwise `ok`.
+### 9.5 Metrics Step Selection
 
-#### `GET /api/v1/traces/:trace_id`
+- centralize step auto-selection in one metrics service module
+- route handlers must not implement custom selection logic
 
-Storage returns all spans for the trace sorted by ascending `start_time`. Root span `parent_span_id` is rendered as `null` in this response only.
+---
 
-```json
-{
-  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "root_service_name": "api-server",
-  "root_name": "POST /v1/checkout",
-  "start_time": "2026-04-02T09:05:10.100Z",
-  "duration_ns": 190000000,
-  "status": "error",
-  "environment": "production",
-  "spans": [
-    {
-      "span_id": "00f067aa0ba902b7",
-      "parent_span_id": null,
-      "service_name": "api-server",
-      "name": "POST /v1/checkout",
-      "kind": "server",
-      "start_time": "2026-04-02T09:05:10.100Z",
-      "end_time": "2026-04-02T09:05:10.290Z",
-      "duration_ns": 190000000,
-      "status": "error",
-      "status_message": "upstream timeout",
-      "attributes": { "http.method": "POST" }
-    }
-  ]
-}
-```
+## 10. PostgreSQL Scope
 
-#### `GET /api/v1/services`
+PostgreSQL should store:
 
-Storage computes this from telemetry in the requested time range, not from static PostgreSQL metadata.
+- service metadata if needed for later enrichment
+- dashboard metadata in later phases
+- alert monitor state in later phases
 
-Supported params: `start`, `end`, `environment`.
-
-Response:
-
-```json
-{
-  "services": [
-    {
-      "service_name": "api-server",
-      "environment": "production",
-      "last_seen": "2026-04-02T09:05:13Z",
-      "request_rate_per_sec": 142.3,
-      "error_rate": 0.023,
-      "p99_latency_ns": 312000000,
-      "log_count": 48201
-    }
-  ]
-}
-```
-
-#### `GET /api/v1/services/:service_name/summary`
-
-Supported params: `start`, `end`, `environment`.
-
-Response:
-
-```json
-{
-  "service_name": "api-server",
-  "environment": "production",
-  "start": "2026-04-02T09:00:00Z",
-  "end": "2026-04-02T09:05:00Z",
-  "last_seen": "2026-04-02T09:05:13Z",
-  "request_rate_per_sec": 142.3,
-  "error_rate": 0.023,
-  "p50_latency_ns": 43000000,
-  "p95_latency_ns": 143000000,
-  "p99_latency_ns": 312000000,
-  "log_count": 48201,
-  "active_alert_count": 1
-}
-```
+PostgreSQL should not become a second telemetry store.
 
 `active_alert_count` is read from alert monitor state in PostgreSQL and counts monitors in `alerting` or `no_data` scoped to the service and optional environment.
 
-#### `GET /api/v1/environments`
+## 11. Retention and Operations
 
-Response:
+Retention must match `INTERFACES.md`:
 
-```json
-{ "environments": ["production", "staging", "dev"] }
-```
+- raw metrics: 30 days
+- metrics_1m: 90 days
+- metrics_1h: 1 year
+- logs: 30 days
+- spans: 30 days
+- trace_index: 30 days
 
-### 5.8 Indexing and Query Strategy
+Operational priorities:
 
-| Table | Partition key | Sort key | Query path served |
-|---|---|---|---|
-| `metrics` | `toYYYYMMDD(timestamp)` | `(service_name, environment, name, timestamp)` | raw metric time windows |
-| `metrics_1m` | `toYYYYMMDD(timestamp)` | `(service_name, environment, name, timestamp)` | metric queries with `1m` step |
-| `metrics_1h` | `toYYYYMMDD(timestamp)` | `(service_name, environment, name, timestamp)` | metric queries with `1h` and `1d` step |
-| `logs` | `toYYYYMMDD(timestamp)` | `(service_name, environment, timestamp, log_id)` | log search and volume |
-| `spans` | `toYYYYMMDD(start_time)` | `(service_name, environment, start_time, trace_id, span_id)` | trace detail and trace-derived summaries |
-| `trace_index` | `toYYYYMMDD(start_time)` | `(root_service_name, environment, start_time, trace_id)` | trace list |
-
-Design notes:
-
-- All time-range endpoints require `start` and `end` to guarantee partition pruning.
-- Log cursors should encode the last `(timestamp, log_id)` pair to keep pagination stable.
-- Trace cursors should encode the last `(start_time, trace_id)` pair.
-- `services` and `service summary` queries should be assembled from signal-specific aggregates, not from a static service registry.
-
-### 5.9 Retention Policy
-
-Storage enforces the canonical retention policy from `INTERFACES.md`:
-
-| Signal | Retention |
-|---|---|
-| Raw metrics | 30 days |
-| Metrics 1-minute rollup | 90 days |
-| Metrics 1-hour rollup | 1 year |
-| Logs | 30 days |
-| Spans | 30 days |
-| Trace index | 30 days |
-| PostgreSQL metadata | Indefinite |
-
-Query behavior beyond retention:
-
-- If a query falls fully outside retention, storage returns an empty result and no error.
-- If a query overlaps the retention boundary, storage returns only retained data.
-- Storage does not enforce alert window limits; alerts validates those at monitor creation time.
-
-### 5.10 Storage-Owned Contract Notes
-
-The storage design depends on these interface decisions already resolved in `INTERFACES.md`:
-
-- Canonical identity fields are `service_name`, `environment`, `host`, and `version`.
-- Metric query responses are grouped as `series[].labels[].points[]`.
-- Trace list and trace detail use `root_service_name`, `root_name`, `duration_ns`, and lowercase `status`.
-- `trace_index` is a storage-owned materialized view concern.
+- explicit SQL migrations
+- reproducible local Docker setup
+- clear table ownership
+- query observability on latency and scanned rows
 
 ---
 
-## 6. Validation
+## 12. Validation
 
-- [x] Rewrote storage-owned schema and API design to use canonical field names from `INTERFACES.md`.
-- [x] Added the storage-owned ingestion write boundary details required by `INTERFACES.md` (`JSONEachRow`, ClickHouse env vars, batch rule, `trace_index` ownership).
-- [x] Removed retired field names, schemas, and endpoint assumptions from this storage design.
-- [x] Aligned retention, trace index ownership, and grouped metric response shape with `INTERFACES.md`.
-- [ ] DDL execution against a local ClickHouse instance remains future implementation validation; this repo does not include runnable storage code yet.
+- [ ] ClickHouse schemas use canonical field names or minimal justified deviations
+- [ ] `trace_index` is generated by a materialized view, not ingestion
+- [ ] every public endpoint in `INTERFACES.md §7` exists in the query API
+- [ ] no superseded endpoint paths remain in implementation plans
+- [ ] log and trace pagination are cursor-based
+- [ ] query responses use canonical field names and timestamp formatting
+- [ ] retention rules are expressed in ClickHouse TTL definitions
 
 ---
 
-## 7. Open Issues
+## 13. Open Issues
 
-- Storage implementation code does not exist in this repo yet, so DDL execution and handler tests remain Phase 2 follow-up work.
-- `INTERFACES.md` requires `log_id` in storage responses; generation is assumed upstream and should remain consistent once ingestion is implemented.
+- If query latency becomes a problem, optimize SQL and rollups before adding more infrastructure.
+- Any future caching layer must preserve canonical response behavior, especially `truncated`, cursor, and timestamp semantics.
