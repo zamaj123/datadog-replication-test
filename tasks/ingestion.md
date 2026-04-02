@@ -28,6 +28,12 @@ Must define contracts with storage before deep implementation.
   - Direct ClickHouse HTTP write path documented with batching and in-memory buffering rules
   - Old conflicting assumptions removed (`resource`-only storage boundary, storage write API, `summary` metrics, trace `events`/`links`, millisecond storage timestamps)
   - Follow-up review alignment completed against `docs/review-alignment.md` ingestion findings without changing the contract in `INTERFACES.md`
+- [x] Implementation approach proposed in `docs/ingestion-implementation-plan.md`
+  - Go selected as the runtime and language for the first ingestion service implementation
+  - Minimal project structure defined under `ingestion/`
+  - Single-process HTTP server shape defined for `/v1` ingestion routes
+  - Metrics-first implementation slice defined without changing shared contracts
+  - Code location in this repo defined for future ingestion implementation work
 
 ### Blocked on
 - No ingestion-specific contract blockers remain for Phase 2 design work; `INTERFACES.md` is the authority for implementation.
