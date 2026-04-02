@@ -51,37 +51,62 @@ Should not build major feature code unless explicitly reassigned.
 
 ---
 
-### Phase 1b — Integration Conflict Analysis and Contract Proposals (2026-04-02)
+### Phase 1b — Pre-design contract proposals (2026-04-02, prospective)
 
-**Output:** `docs/review-integration.md`
+**Output:** `docs/review-integration.md` (first pass — no subsystem docs existed yet)
 
-**Note:** Subsystem design docs did not exist at time of review (all branches at initial commit). Review was performed prospectively based on observability platform design patterns.
+Prospective review based on standard observability platform patterns. Superseded by Phase 2 review below.
 
-**Conflicts identified (13):**
-- 5 ingestion vs. storage schema conflicts (timestamp format, tag representation, metric types, log severity, trace unit)
-- 4 storage vs. frontend query conflicts (aggregation ownership, correlation endpoint, service summary, pagination model)
-- 4 alerts vs. storage conflicts (evaluation traffic pattern, no-data semantics, group-by requirement, window boundary semantics)
+---
 
-**Terminology inconsistencies:** 10 term conflicts across subsystems; canonical table produced in §3.
+### Phase 2 — Cross-subsystem conflict review against actual designs (2026-04-02)
 
-**Concrete contracts proposed:**
-- Universal identity fields (service_name, environment, timestamp, host, version)
-- Metric event JSON schema with histogram payload
-- Log event JSON schema with OTel severity scale
-- Trace span JSON schema with all required fields
-- Ingestion API endpoints, auth, ack semantics, partial failure format
-- Query API endpoints with full parameter and response shapes (metrics, logs, traces, service summary)
-- Alert state schema and polling delivery model
-- Full proposed INTERFACES.md section structure with AGREED/PROPOSED/OPEN status model
+**Output:** `docs/review-integration.md` (replaced with concrete findings)
 
-**18 decisions tabled** in §6 that all agents must agree on before design docs are written.
+**Source docs:** all four subsystem design docs merged from integration branch.
+
+**Conflicts identified: 20**
+
+- Ingestion vs. Storage (9 conflicts):
+  1. Timestamp unit: ingestion=milliseconds, storage=nanoseconds — total timestamp corruption
+  2. Identity field names: OTel dotted attrs vs. flat columns — correlation silently broken
+  3. Write architecture: ingestion expects write API, storage expects direct ClickHouse — no connection point
+  4. Histogram format: one JSON object vs. per-bucket rows — incompatible structures
+  5. Span field name: `name` (ingestion) vs. `operation` (storage) — blank operation names
+  6. Duration unit: `duration_ms` (ingestion) vs. `duration_ns` (storage) — wrong values stored
+  7. Log body field: `body` (ingestion) vs. `message` (storage) — message column never populated
+  8. Log severity type: string passthrough vs. integer enum — insert failures
+  9. `trace_index` responsibility: assigned to ingestion by storage, unknown to ingestion
+
+- Storage vs. Frontend (6 conflicts):
+  10. Query time params: `start`/`end` (storage) vs. `from`/`to` (frontend) — every query fails
+  11. Trace list path: `/traces/list` (storage) vs. `/traces/query` (frontend) — 404
+  12. Metric series shape: flat points (storage) vs. series-with-labels (frontend) — crash
+  13. Services endpoint: metadata only (storage) vs. metrics-enriched (frontend) — missing data
+  14. Missing `logs/volume` endpoint — log histogram has no data source
+  15. Missing `log_id` field — log table has no stable row key
+  16. Log severity field name: `severity` (storage) vs. `level` (frontend) — blank badges
+  17. Trace status case: lowercase (storage) vs. uppercase (frontend) — filter and badge failures
+
+- Alerts vs. Storage (3 conflicts):
+  18. Metric series shape: same as #12, plus `t`/`v` field names vs. `timestamp`/`value`
+  19. `group_by` missing from both alerts MetricQuery and storage API — multi-dimensional alerting impossible
+  20. Log query interface: DSL string (alerts) vs. structured params (storage) — incompatible
+
+**Terminology inconsistencies:** 10 term conflicts; canonical table in §5.
+
+**18 missing decisions** tabulated in §4 with proposed answers and resolution group ordering.
+
+**Unified contract layer proposed** in §6: canonical identity fields, metric/log/span event schemas, ingestion API, query API with canonical response shapes, alert state schema.
+
+**INTERFACES.md structure** proposed in §7 with 8 sections and AGREED/PROPOSED/OPEN status model.
 
 ---
 
 ## Pending Work
 
-- Review subsystem design proposals once agents produce them
-- Verify each design doc references INTERFACES.md sections and does not contradict them
-- Review first draft of `INTERFACES.md` once Storage agent produces it (or produce stub if no agent does)
-- Re-review after storage stack decision is made — histogram storage format and query model may need revision
-- Flag any implementation that proceeds against an undocumented or OPEN interface section
+- All agents must review `docs/review-integration.md` and resolve conflicts before implementation
+- `INTERFACES.md` must be created (storage agent proposed as owner for §6; all agents for §1)
+- 18 decisions in §4 must be formally resolved and recorded
+- Review implementation PRs against INTERFACES.md once agreed contracts exist
+- Flag any PR that implements against an OPEN or unresolved section
