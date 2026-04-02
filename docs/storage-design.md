@@ -45,7 +45,27 @@ Define the storage-owned schema, indexing, retention, and query API design for m
 
 The storage subsystem owns ClickHouse schemas, materialized views, query execution, and retention enforcement. Ingestion owns write batching and event normalization before rows reach ClickHouse.
 
-### 5.2 Canonical Identity and Time Model
+### 5.2 Write Architecture
+
+Storage owns the ClickHouse schema at the ingestion-to-storage boundary defined in `INTERFACES.md`.
+
+- Ingestion writes directly to ClickHouse over the HTTP interface with `FORMAT JSONEachRow`.
+- There is no intermediate storage write API service.
+- Ingestion owns the ClickHouse write client.
+- Ingestion batches writes at 1000 rows or every 500ms, whichever comes first.
+- `trace_index` is populated by a ClickHouse materialized view on `spans`; ingestion has no `trace_index` write responsibility.
+
+Storage defines the ClickHouse connection environment variables consumed by ingestion:
+
+| Variable | Description |
+|---|---|
+| `CLICKHOUSE_HOST` | Hostname of ClickHouse instance |
+| `CLICKHOUSE_PORT` | HTTP port, default `8123` |
+| `CLICKHOUSE_DATABASE` | Database name |
+| `CLICKHOUSE_USER` | Username |
+| `CLICKHOUSE_PASSWORD` | Password |
+
+### 5.3 Canonical Identity and Time Model
 
 Storage stores the canonical top-level identity fields from `INTERFACES.md` on every signal table:
 
@@ -58,7 +78,7 @@ Storage stores the canonical top-level identity fields from `INTERFACES.md` on e
 
 All event times are stored as `DateTime64(9, 'UTC')` in ClickHouse after ingestion converts nanosecond wire values into the table column type. Query responses convert these values to ISO 8601 strings with millisecond precision.
 
-### 5.3 Metrics Storage Schema
+### 5.4 Metrics Storage Schema
 
 Metrics use canonical field names from `INTERFACES.md`: `name`, `type`, `unit`, `value`, and `tags`. Histogram points are stored as exploded bucket rows with the same schema as other metrics; bucket identity remains in `tags` (for example `le=0.5`).
 
@@ -149,7 +169,7 @@ SETTINGS index_granularity = 8192;
 
 Materialized views populate these rollups from `metrics`. Storage selects raw data, `metrics_1m`, or `metrics_1h` based on the canonical `step` auto-selection rules in `INTERFACES.md`.
 
-### 5.4 Logs Storage Schema
+### 5.5 Logs Storage Schema
 
 Logs store the canonical schema including `log_id`, `severity_number`, `severity_text`, and optional trace correlation fields.
 
@@ -188,7 +208,7 @@ ALTER TABLE logs
 
 Storage treats `log_id` as an opaque stable identifier generated upstream. The query API exposes it unchanged.
 
-### 5.5 Spans and Trace Index Schema
+### 5.6 Spans and Trace Index Schema
 
 Spans store canonical fields from `INTERFACES.md`. Root detection remains `parent_span_id == ""` in storage rows. Query responses convert the root `parent_span_id` to `null` for trace detail responses.
 
@@ -255,7 +275,7 @@ ALTER TABLE spans
     ADD INDEX idx_spans_name name TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 4;
 ```
 
-### 5.6 Query API Design
+### 5.7 Query API Design
 
 Storage owns the `/api/v1` query API. The storage design must match `INTERFACES.md` exactly for paths, parameter names, response field names, pagination, and status values.
 
@@ -265,6 +285,7 @@ Storage owns the `/api/v1` query API. The storage design must match `INTERFACES.
 - Time range params are `start` and `end`, both required where defined.
 - Time range semantics are `[start, end)`.
 - Response timestamps are ISO 8601 strings with millisecond precision.
+- Status values are lowercase throughout: `ok`, `error`, `unset`.
 - Pagination is cursor-based with `next_cursor`; offset pagination is not supported.
 - Error responses use `{ "error": "...", "code": "bad_request" }`.
 
@@ -321,7 +342,7 @@ Response:
 
 #### `GET /api/v1/logs`
 
-Supported params: `start`, `end`, `environment`, `service_name`, `severity_min`, `search`, `trace_id`, `limit`, `cursor`, `count_only`.
+Supported params: `start`, `end`, `environment`, `service_name`, `severity_min`, `search`, `trace_id`, `limit`, `cursor`, `count_only`. `limit` defaults to `100` and maxes at `1000`.
 
 Response shape:
 
@@ -354,6 +375,8 @@ When `count_only=true`, storage returns:
 { "count": 1204, "truncated": false }
 ```
 
+`total_matched` is an estimate. `truncated: true` means the result count exceeded an internal cap before reaching `end`.
+
 #### `GET /api/v1/logs/volume`
 
 Supported params: `start`, `end`, `environment`, `service_name`, `step`.
@@ -378,7 +401,7 @@ Response:
 
 #### `GET /api/v1/traces`
 
-Supported params: `start`, `end`, `environment`, `service_name`, `status`, `min_duration_ms`, `trace_id`, `limit`, `cursor`.
+Supported params: `start`, `end`, `environment`, `service_name`, `status`, `min_duration_ms`, `trace_id`, `limit`, `cursor`. `limit` defaults to `50` and maxes at `200`.
 
 Response:
 
@@ -399,6 +422,8 @@ Response:
   "next_cursor": null
 }
 ```
+
+`duration_ns` is returned in nanoseconds. `status` is `error` if any span in the trace has `status == "error"`, otherwise `ok`.
 
 #### `GET /api/v1/traces/:trace_id`
 
@@ -488,7 +513,7 @@ Response:
 { "environments": ["production", "staging", "dev"] }
 ```
 
-### 5.7 Indexing and Query Strategy
+### 5.8 Indexing and Query Strategy
 
 | Table | Partition key | Sort key | Query path served |
 |---|---|---|---|
@@ -506,7 +531,7 @@ Design notes:
 - Trace cursors should encode the last `(start_time, trace_id)` pair.
 - `services` and `service summary` queries should be assembled from signal-specific aggregates, not from a static service registry.
 
-### 5.8 Retention Policy
+### 5.9 Retention Policy
 
 Storage enforces the canonical retention policy from `INTERFACES.md`:
 
@@ -526,7 +551,7 @@ Query behavior beyond retention:
 - If a query overlaps the retention boundary, storage returns only retained data.
 - Storage does not enforce alert window limits; alerts validates those at monitor creation time.
 
-### 5.9 Storage-Owned Contract Notes
+### 5.10 Storage-Owned Contract Notes
 
 The storage design depends on these interface decisions already resolved in `INTERFACES.md`:
 
@@ -540,6 +565,7 @@ The storage design depends on these interface decisions already resolved in `INT
 ## 6. Validation
 
 - [x] Rewrote storage-owned schema and API design to use canonical field names from `INTERFACES.md`.
+- [x] Added the storage-owned ingestion write boundary details required by `INTERFACES.md` (`JSONEachRow`, ClickHouse env vars, batch rule, `trace_index` ownership).
 - [x] Removed retired field names, schemas, and endpoint assumptions from this storage design.
 - [x] Aligned retention, trace index ownership, and grouped metric response shape with `INTERFACES.md`.
 - [ ] DDL execution against a local ClickHouse instance remains future implementation validation; this repo does not include runnable storage code yet.
