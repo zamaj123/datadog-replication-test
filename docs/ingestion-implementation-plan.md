@@ -1,128 +1,78 @@
 # Ingestion Implementation Plan
 
 **Agent:** Ingestion  
-**Status:** Proposed implementation approach  
+**Status:** Proposed scaffold only  
 **Contract source:** `INTERFACES.md`
 
 ---
 
 ## 1. Objective
 
-Define a concrete, minimal implementation approach for the ingestion service that matches the current contracts in `INTERFACES.md` without changing those contracts.
+Define a concrete, minimal implementation scaffold for the ingestion subsystem that:
+
+- follows `INTERFACES.md` exactly for external and ingestion-to-storage contracts
+- follows the Node.js + TypeScript implementation direction from the reviewer architecture guidance
+- stays within ingestion ownership
+- does not implement code yet
 
 ---
 
 ## 2. Runtime and Language
 
-**Choice:** Go
+**Choice:** Node.js 22 LTS + TypeScript
 
-### Why Go
+### Reasoning
 
-- A single static binary keeps the service easy to run in local and container environments.
-- The standard library provides everything needed for the initial HTTP server, JSON decoding, request timeouts, and background flushing.
-- Concurrency for batched ingestion and ClickHouse flush workers is straightforward with goroutines and channels.
-- The repo currently has no existing runtime to preserve, so Go is a practical minimal default for a network service with buffering and validation.
+- This matches the reviewer’s unified implementation direction for backend services.
+- It fits the initial product target of a Dockerized Node.js application ecosystem.
+- It avoids introducing a mixed-language backend before any runtime code exists in the repo.
+- It is sufficient for HTTP intake, JSON validation, in-memory batching, and ClickHouse HTTP writes without adding infrastructure complexity.
 
-This choice does not change any external contract. It only defines the implementation stack for the ingestion-owned service.
+This is an implementation-stack choice only. It does not change any contract in `INTERFACES.md`.
 
 ---
 
-## 3. Service Shape
+## 3. Folder Location in This Repo
 
-Implement ingestion as a single HTTP service process with three intake endpoints:
+The ingestion service code should live under:
+
+```text
+apps/ingestion/
+```
+
+This aligns with the reviewer’s monorepo direction while staying limited to ingestion scope.
+
+Docs remain in `docs/`. Task tracking remains in `tasks/`.
+
+---
+
+## 4. Minimal Server Framework
+
+**Choice:** Fastify
+
+### Why Fastify
+
+- Minimal setup for JSON HTTP APIs
+- Good request/response performance for telemetry intake
+- Straightforward hook/middleware model for `X-Api-Key` auth
+- Simple route registration for `/v1/metrics`, `/v1/logs`, and `/v1/traces`
+- Works cleanly with TypeScript without introducing framework-heavy conventions
+
+This should be a single ingestion service process exposing the canonical ingestion API:
 
 - `POST /v1/metrics`
 - `POST /v1/logs`
 - `POST /v1/traces`
 
-For the first implementation pass, all three routes can exist in the server, but metrics should be implemented first. The service should:
-
-- require `X-Api-Key` on all ingestion requests
-- accept `application/json`
-- decode batch payloads
-- normalize OTel resource attributes into canonical top-level identity fields
-- validate per-event payloads
-- convert timestamps to nanoseconds at the ingestion-to-storage boundary
-- buffer accepted rows in memory
-- flush accepted rows to ClickHouse over HTTP using `FORMAT JSONEachRow`
-- return `202` with accepted/rejected counts and partial-batch errors as defined in `INTERFACES.md`
-
-This remains a single-process architecture:
-
-```text
-client SDK -> ingestion HTTP server -> normalizer/validator -> in-memory buffer -> ClickHouse HTTP
-```
+The service writes directly to ClickHouse over HTTP. It must not introduce a storage write API.
 
 ---
 
-## 4. Minimal Project Structure
+## 5. Config Approach
 
-Code should live under a new top-level `ingestion/` directory in this repo.
+Use environment-based config loaded at process startup and validated in one ingestion-owned config module.
 
-```text
-ingestion/
-├── go.mod
-├── cmd/
-│   └── server/
-│       └── main.go
-├── internal/
-│   ├── config/
-│   │   └── config.go
-│   ├── gateway/
-│   │   ├── server.go
-│   │   ├── middleware.go
-│   │   └── metrics_handler.go
-│   ├── identity/
-│   │   └── normalizer.go
-│   ├── metrics/
-│   │   ├── types.go
-│   │   ├── decode.go
-│   │   ├── validate.go
-│   │   └── expand.go
-│   ├── buffer/
-│   │   └── queue.go
-│   ├── clickhouse/
-│   │   ├── client.go
-│   │   └── writer.go
-│   └── ingestion/
-│       └── pipeline.go
-└── tests/
-    ├── metrics_handler_test.go
-    ├── metrics_validate_test.go
-    └── metrics_expand_test.go
-```
-
-### Structure notes
-
-- `cmd/server/main.go` starts the HTTP server and background flush worker.
-- `internal/config` loads `INGESTION_API_KEY` and the ClickHouse environment variables defined in `INTERFACES.md`.
-- `internal/gateway` owns HTTP routing, auth, request decoding, and response formatting.
-- `internal/identity` owns OTel resource-to-canonical-field normalization.
-- `internal/metrics` owns metrics request shapes, validation, and histogram expansion.
-- `internal/buffer` owns the in-memory queue with the configured row limit.
-- `internal/clickhouse` owns batched HTTP inserts to ClickHouse.
-- `internal/ingestion/pipeline.go` wires handler -> normalization -> validation -> buffer/write flow.
-
-This structure is intentionally minimal. It creates clear ingestion-owned boundaries without introducing a broader platform framework.
-
----
-
-## 5. How the Service Runs
-
-The service should run as one HTTP server process.
-
-### Startup behavior
-
-At startup, the service should:
-
-- load config from environment
-- fail fast if required config is missing
-- construct the in-memory buffer
-- construct the ClickHouse client
-- start a background flush loop
-- start the HTTP listener
-
-### Required environment variables
+### Required contract config
 
 From `INTERFACES.md`:
 
@@ -133,142 +83,221 @@ From `INTERFACES.md`:
 - `CLICKHOUSE_USER`
 - `CLICKHOUSE_PASSWORD`
 
-Additional implementation-local variables may be added only for server operation, such as listen port, but they must not alter the external contract.
+### Additional local runtime config
 
-### HTTP behavior
+Allowed only for service operation, not contract changes:
 
-The server should use the standard library `net/http` package for the initial implementation.
+- `PORT`
+- optional flush tuning values only if they default to the contract values and do not alter the documented behavior
 
-Minimal routing:
+### Validation approach
 
-- `/v1/metrics` -> metrics handler
-- `/v1/logs` -> placeholder route registration until implemented
-- `/v1/traces` -> placeholder route registration until implemented
+Use a small typed config module that:
 
-Only the metrics path needs to be fully implemented first. Logs and traces can return a clear not-yet-implemented server response internally until their ingestion paths are built, but that is implementation sequencing, not a contract change.
+- reads environment variables once at startup
+- validates required values
+- fails fast on missing required configuration
+- exports one typed config object to the rest of the app
 
 ---
 
-## 6. Metrics Path Implementation Approach
+## 6. Test Approach
 
-Implement the metrics path first because it is self-contained and already fully specified in `INTERFACES.md`.
+Use the standard Node.js TypeScript service testing split:
 
-### Request shape handled by the server
+- **unit tests** for normalization, validation, timestamp conversion, and histogram expansion
+- **route tests** for `/v1/metrics`, `/v1/logs`, and `/v1/traces` request handling behavior
+- **writer tests** for batching and ClickHouse HTTP request shaping
 
-The handler accepts:
+### Minimal tooling
 
-```json
-{ "metrics": [ ... ] }
+- test runner: Vitest
+- HTTP route testing: Fastify inject
+
+### Required initial test coverage
+
+The first scaffold should be designed to support tests for:
+
+- missing or invalid `X-Api-Key`
+- invalid `Content-Type`
+- missing `service_name` or `environment` after normalization
+- millisecond-to-nanosecond timestamp conversion
+- malformed metric tag keys
+- histogram expansion into bucket rows plus `_count` and `_sum`
+- partial-batch accepted/rejected responses
+- buffer flush threshold behavior
+
+---
+
+## 7. Minimal Project Structure
+
+The initial scaffold should create only the files needed to establish the service shape:
+
+```text
+apps/
+  ingestion/
+    package.json
+    tsconfig.json
+    src/
+      server/
+        app.ts
+        start.ts
+      routes/
+        metrics.ts
+        logs.ts
+        traces.ts
+      pipeline/
+        handle-metrics.ts
+        handle-logs.ts
+        handle-traces.ts
+      normalization/
+        resource.ts
+        timestamps.ts
+        severity.ts
+      clickhouse/
+        client.ts
+        writer.ts
+        buffer.ts
+      config/
+        env.ts
+      types/
+        metrics.ts
+        logs.ts
+        traces.ts
+    test/
+      metrics.route.test.ts
+      metrics.pipeline.test.ts
+      resource-normalization.test.ts
 ```
 
-Each metric event may contain:
+---
 
-- OTel `resource` attributes that need normalization
-- metric fields that map to gauge/counter rows
-- histogram fields that need expansion before buffering/writing
+## 8. Initial Files to Create
 
-### Processing steps
+The first scaffold should create these files under `apps/ingestion/`:
 
-For each metric event:
+### Project files
 
-1. Decode JSON request body.
-2. Authenticate request via `X-Api-Key`.
-3. Normalize resource attributes into `service_name`, `environment`, `host`, and `version`.
-4. Validate required identity fields and metric-specific constraints.
-5. Convert event timestamp to nanoseconds for the storage boundary.
-6. If the metric is `gauge` or `counter`, emit one canonical row.
-7. If the metric is `histogram`, emit one row per bucket plus `_count` and `_sum`.
-8. Add accepted rows to the shared buffer.
-9. Collect per-event validation failures into the response body.
-10. Return `202` with accepted and rejected counts.
+- `package.json`
+- `tsconfig.json`
 
-### Validation rules to enforce from the contract
+### Server entrypoints
 
-- `service_name` and `environment` must be present and non-empty after normalization.
-- `host` and `version` default to `""`.
-- metric `type` must be `gauge`, `counter`, or `histogram`
-- `summary` is rejected
-- counter `value >= 0`
-- tag key regex: `[a-z_][a-z0-9_.]*`
-- max 20 tags
-- tag key max 64 chars
-- tag value max 256 chars
+- `src/server/app.ts`
+- `src/server/start.ts`
 
-### Buffer and write behavior
+### Route registration
 
-- Accepted rows go into a shared in-memory queue.
-- The queue must support the contract behavior of buffering up to 10,000 rows and dropping oldest on overflow.
-- A background worker flushes up to 1000 rows every 500ms or earlier when batch size is reached.
-- Flushes use ClickHouse HTTP inserts with `FORMAT JSONEachRow`.
+- `src/routes/metrics.ts`
+- `src/routes/logs.ts`
+- `src/routes/traces.ts`
+
+### Ingestion pipeline
+
+- `src/pipeline/handle-metrics.ts`
+- `src/pipeline/handle-logs.ts`
+- `src/pipeline/handle-traces.ts`
+
+### Normalization and validation support
+
+- `src/normalization/resource.ts`
+- `src/normalization/timestamps.ts`
+- `src/normalization/severity.ts`
+
+### ClickHouse write path
+
+- `src/clickhouse/client.ts`
+- `src/clickhouse/writer.ts`
+- `src/clickhouse/buffer.ts`
+
+### Config
+
+- `src/config/env.ts`
+
+### Local ingestion types
+
+- `src/types/metrics.ts`
+- `src/types/logs.ts`
+- `src/types/traces.ts`
+
+### Initial tests
+
+- `test/metrics.route.test.ts`
+- `test/metrics.pipeline.test.ts`
+- `test/resource-normalization.test.ts`
+
+This is the smallest practical scaffold that supports the contract-defined ingestion pipeline without adding unrelated framework structure.
 
 ---
 
-## 7. ClickHouse Write Approach
+## 9. Service Shape
 
-The ClickHouse writer should be ingestion-owned and minimal.
+The scaffold should support one Fastify process with these responsibilities:
 
-### Responsibilities
+1. authenticate requests using `X-Api-Key`
+2. parse JSON request bodies
+3. normalize OTel resource attributes into canonical top-level identity fields
+4. validate signal-specific event payloads against `INTERFACES.md`
+5. convert timestamps to nanoseconds at the ingestion-to-storage boundary
+6. expand histogram metrics into canonical rows
+7. buffer accepted rows in memory
+8. flush rows directly to ClickHouse with `FORMAT JSONEachRow`
+9. return `202` partial-batch results in the contract shape
 
-- build the correct ClickHouse HTTP endpoint from environment config
-- serialize canonical metric rows as `JSONEachRow`
-- send batched inserts
-- surface write failures back to the buffer/flush loop
+This process owns ingestion only. It does not own:
 
-### Table targeting
-
-The writer should assume storage owns the ClickHouse schema and target the metrics table expected by the storage subsystem contract. The ingestion service should not define or redesign storage schema in this plan.
-
-### Failure handling
-
-- If ClickHouse is temporarily unavailable, accepted rows remain buffered until retried or evicted by queue overflow.
-- When the server cannot accept more buffered rows for a request, it should return `503` as described by `INTERFACES.md`.
-
----
-
-## 8. Minimal Testing Plan
-
-The first implementation should include tests for the metrics path only.
-
-Required tests:
-
-- auth test for missing and invalid `X-Api-Key`
-- decode/validation test for missing `service_name` after normalization
-- timestamp conversion test from milliseconds to nanoseconds
-- gauge/counter acceptance test
-- counter negative-value rejection test
-- malformed tag key rejection test
-- histogram expansion test for bucket rows plus `_count` and `_sum`
-- partial-batch response test with accepted and rejected events in one request
-- buffer overflow behavior test for oldest-row eviction
-
-Tests should be standard Go tests run with `go test ./...` under the `ingestion/` module.
+- query APIs
+- trace assembly
+- `trace_index` maintenance
+- a storage write API
 
 ---
 
-## 9. Where Code Should Live in This Repo
+## 10. Metrics-First Delivery Slice
 
-Use this repo layout:
+The first implementation slice should focus on the metrics path while keeping the scaffold ready for logs and traces.
 
-- design and planning docs remain in `docs/`
-- task tracking remains in `tasks/`
-- implementation code for the ingestion service lives in `ingestion/`
+### First slice
 
-This keeps implementation separate from subsystem design docs while staying entirely within ingestion ownership.
+1. scaffold `apps/ingestion`
+2. add env parsing and server startup
+3. register `/v1/metrics`, `/v1/logs`, `/v1/traces`
+4. fully implement `/v1/metrics`
+5. add resource normalization and timestamp conversion helpers
+6. add in-memory buffering and ClickHouse HTTP writer
+7. add metrics-path tests
+
+### Why this is minimal
+
+- Metrics are fully defined in `INTERFACES.md`
+- Histogram expansion is the most distinctive ingestion-specific transform
+- It proves the direct ClickHouse write path without inventing any new subsystem boundary
+
+Logs and traces should be scaffolded at the route and pipeline level but not implemented in the first code pass if the goal is the smallest practical start.
 
 ---
 
-## 10. Recommended First Delivery Slice
+## 11. Contract Alignment Rules
 
-The first implementation slice should be:
+The scaffold must preserve these contract decisions:
 
-1. scaffold `ingestion/` Go module
-2. add config loading
-3. add HTTP server and auth middleware
-4. implement `/v1/metrics`
-5. implement identity normalization
-6. implement metric validation and histogram expansion
-7. implement in-memory queue
-8. implement ClickHouse batch writer
-9. add metrics-path tests
+- `INTERFACES.md` field names remain canonical
+- identity fields are top-level at the ingestion-to-storage boundary
+- timestamps are nanoseconds at the ingestion-to-storage boundary
+- ingestion writes directly to ClickHouse HTTP
+- ingestion uses `X-Api-Key`
+- batching remains 1000 rows or 500ms
+- `trace_index` remains storage-owned
 
-This is the smallest practical slice that produces a contract-aligned metrics ingestion path without requiring any redesign of shared interfaces.
+The scaffold must not introduce:
+
+- a storage write service
+- alternate field aliases such as `service`, `env`, `metric`, or `level`
+- a different API shape for `/v1` ingestion routes
+- a different batching contract
+
+---
+
+## 12. Open Issues
+
+- The exact package-manager choice is intentionally left open in this scaffold plan because it does not affect the ingestion contract. The initial scaffold can use the repo’s eventual monorepo standard when implementation begins.
