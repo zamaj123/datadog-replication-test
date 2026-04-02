@@ -1,655 +1,697 @@
-# Integration Review — Pre-Design Conflict Analysis and Contract Proposals
+# Integration Review — Cross-Subsystem Conflict Analysis
 
 **Author:** Reviewer Agent
 **Date:** 2026-04-02
-**Input docs reviewed:** `PRODUCT.md`, `ARCHITECTURE.md`, `tasks/*.md`, `docs/review-design.md`
-**Note on subsystem design docs:** As of this writing, `docs/ingestion-design.md`, `docs/storage-design.md`, `docs/frontend-design.md`, and `docs/alerts-design.md` do not yet exist. All subsystem branches are at the initial commit. This review therefore operates prospectively: it documents the specific conflicts that will emerge if agents design in isolation, based on the known structure of observability platforms of this type, and proposes the concrete contracts that prevent them. This document should be read and agreed on by all agents before any subsystem design begins.
+**Branch:** subsystem/review (merged from integration)
+**Documents reviewed:**
+- `docs/ingestion-design.md`
+- `docs/storage-design.md`
+- `docs/frontend-design.md`
+- `docs/alerts-design.md`
+- `PRODUCT.md`, `ARCHITECTURE.md`
 
 ---
 
-## 1. Conflicts Between Subsystems
+## Executive Summary
 
-### 1.1 Ingestion vs. Storage: Schema Mismatches
+All four subsystem designs are coherent within their own boundaries. The cross-subsystem integration picture is not. There are **20 concrete conflicts** that will cause runtime failures if not resolved before implementation begins. The most severe are:
 
-These are not hypothetical. They are the canonical failure modes when an ingestion team and a storage team design independently.
-
-**Conflict 1 — Timestamp format.**
-Ingestion will pick one of: Unix milliseconds (common in JS), Unix nanoseconds (OTLP standard), Unix microseconds (some Postgres drivers), or RFC 3339 strings (human-readable JSON). Storage will independently pick whatever is native to its chosen engine. If they differ, every event arrives with a timestamp that must be re-parsed at write time, introducing both overhead and potential loss of precision. A trace span with microsecond timestamps written to a storage column expecting milliseconds silently truncates precision, breaking duration calculations.
-
-**Required decision:** one timestamp format for all signal types, enforced at the ingestion boundary. Proposed: Unix nanoseconds (int64) as the canonical form. Rationale: highest precision, OTLP-native, no string parsing, trivially downsampled.
-
-**Conflict 2 — Tag/label representation.**
-Ingestion will likely represent metadata as `Map<string, string>` in JSON (the natural form for HTTP intake). Storage will want to either normalize tags into indexed columns (for metrics), store as a flat string (for logs), or use a nested document (for traces). If ingestion passes arbitrary nested objects and storage expects a flat string map, the write path must transform — but no one will have specified that transformation, so both will handle it partially.
-
-**Required decision:** canonical tag representation is `Map<string, string>` with a defined maximum entry count. Storage may index however it chooses internally, but the handoff format from ingestion is a flat string-to-string map.
-
-**Conflict 3 — Metric type encoding.**
-A counter, gauge, and histogram are fundamentally different storage structures. Ingestion will receive them from agents in different shapes (a counter is a single number, a histogram is a bucket list). If ingestion normalizes all metrics into a single `{name, value, tags}` structure, histograms will be either dropped or mangled. Storage will not be able to compute correct percentiles from mangled histogram data.
-
-**Required decision:** metric type is a required field. Histograms must carry their bucket boundaries and counts as a structured payload, not as a single `value` field. Ingestion must pass all three types to storage in type-preserving form.
-
-**Conflict 4 — Log severity representation.**
-Ingestion receives severity strings from application agents in any format: `"ERROR"`, `"error"`, `"ERR"`, `"40"`, `"4"`. If ingestion normalizes to an integer enum and storage expects a string, or vice versa, any log query using `level = "error"` will return zero results. Frontend will display an empty log explorer.
-
-**Required decision:** canonical internal form for log severity is an integer enum. Ingestion is responsible for mapping all incoming string forms to this enum before writing to storage.
-
-**Conflict 5 — Trace span vs. trace container.**
-PRODUCT.md requires trace ingestion and querying. The core model question is: does the ingestion API accept individual spans, or does it accept a complete trace (all spans for a trace_id in one request)? If ingestion accepts individual spans (the OTLP model), storage must assemble traces from spans on read. If ingestion accepts complete traces, it must buffer until the trace is complete before writing, which is fundamentally different pipeline logic. If agents assume different models, ingestion will write spans that storage never assembles into traces, and the trace explorer will show only root spans.
-
-**Required decision:** ingestion accepts individual spans (no buffering). Storage is responsible for assembling spans into a queryable trace on write or read (implementation detail), but the ingestion-to-storage handoff is per-span.
+1. Ingestion timestamps are milliseconds; storage requires nanoseconds — every span ordering calculation breaks.
+2. Ingestion uses OTel dotted resource attributes (`service.name`); storage uses flat columns (`service`) — identity-based correlation silently returns no results.
+3. Frontend uses `from`/`to` query params; storage uses `start`/`end` — every frontend query fails at the HTTP layer.
+4. Storage has no `group_by` on metric queries; alerts requires it for multi-dimensional evaluation — multi-service alerting is unimplementable.
+5. Ingestion's write path to storage is architecturally undefined — one agent expects a write API, the other expects direct ClickHouse writes.
 
 ---
 
-### 1.2 Storage vs. Frontend: Query Mismatches
+## 1. Conflicts: Ingestion vs. Storage
 
-**Conflict 6 — Aggregation responsibility.**
-Storage will naturally expose raw data retrieval: "give me all data points for metric X between T1 and T2." Frontend needs to render line charts, which require server-side aggregation (downsampling to chart resolution). If storage returns raw points, a 30-day chart with 10-second resolution metric data requires the client to process 259,200 data points per series. This will not work in a browser. Frontend will build its own aggregation layer in JavaScript. Storage will be surprised that no one calls its new aggregation endpoint when they add one in Phase 5.
+### Conflict 1 — Timestamp unit mismatch
 
-**Required decision:** storage query API must support a `step` or `resolution` parameter that triggers server-side downsampling. This is a storage design constraint, not a frontend nicety. It must be in the query API contract before storage designs the query layer.
+**Ingestion** (`§6`): "All timestamps are Unix milliseconds (int64)."
+**Storage** (`§5.10, constraint 1`): "Timestamps must be nanosecond-precision UTC. Sub-millisecond precision is required for trace span ordering."
 
-**Conflict 7 — Multi-signal correlation endpoint.**
-PRODUCT.md lists "Correlation across metrics, logs, and traces" as a core capability. This requires either: (a) a query endpoint that joins across signal types server-side, or (b) a client that issues three queries and joins on identity fields. Option (b) is only viable if the identity fields are guaranteed to be consistent and the client can join on `trace_id`. Option (a) requires the storage layer to support cross-signal joins. Neither option has been chosen, and neither storage nor frontend has been told which to implement. If storage implements (b) and frontend implements (a), frontend will request a join endpoint that does not exist.
+Impact: ingestion writes `1711234567890` (ms); ClickHouse `DateTime64(9)` interprets this as a time in January 1970. Every event is stored with a garbage timestamp. Queries by time range return no data. Trace span ordering is impossible. This is a total integration failure, not a minor discrepancy.
 
-**Required decision:** correlation model must be declared. Proposed: client-side assembly using consistent identity fields (service_name, trace_id) for v1. This means storage only needs consistent field names, not a join API. Document this explicitly so frontend does not wait for a cross-signal endpoint.
-
-**Conflict 8 — Service overview endpoint.**
-Frontend's task describes a "Service detail view." To render a service overview (latency p50/p99, error rate, throughput, recent logs, active traces), frontend needs either: one "service summary" endpoint that returns pre-aggregated data across signal types, or five separate queries it assembles client-side. If storage does not design a service summary endpoint, frontend will issue five separate queries per page load, each against potentially different storage backends, with no guarantee of time-consistency between them.
-
-**Required decision:** a `/v1/query/services/{service_name}/summary` endpoint shape must be agreed before storage designs its query API surface.
-
-**Conflict 9 — Pagination models.**
-Storage will implement pagination using whatever its engine supports — likely cursor-based (efficient for time-series) or keyset pagination. Frontend log explorers typically expect offset-based pagination ("give me page 3 of results") because users navigate by clicking page numbers. Cursor-based pagination cannot support "jump to page 3." If storage designs cursor-only pagination and frontend designs a paginated log table, the log explorer will not support page navigation.
-
-**Required decision:** log and trace queries use cursor-based pagination. Frontend must design the log explorer UI to use "next page" navigation, not page numbers. This is a frontend constraint derived from storage reality, and frontend must know it before designing the log explorer component.
+**Resolution required:** pick one unit for the wire format between ingestion and storage. Proposed: nanoseconds throughout. Ingestion must convert incoming milliseconds from SDKs before forwarding.
 
 ---
 
-### 1.3 Alerts vs. Storage/Query: Mismatches
+### Conflict 2 — Identity field names: OTel resource attributes vs. flat columns
 
-**Conflict 10 — Evaluation query vs. dashboard query.**
-Frontend queries storage on demand (user-triggered). Alerts evaluates rules on a schedule — potentially hundreds of rules, each issuing a query every 30–60 seconds. These are architecturally different traffic patterns. A storage layer designed for interactive latency will buckle under sustained scheduled query load if no capacity separation exists. If alerts simply uses the same query API as frontend with no acknowledgment of this, the shared query layer becomes a bottleneck and both alert evaluations and dashboard loads degrade together.
+**Ingestion** defines a `resource` block with dotted OTel attribute names:
+```json
+{ "resource": { "service.name": "api-server", "deployment.environment": "production", "host.name": "worker-1" } }
+```
 
-**Required decision:** alerts evaluation must use a dedicated query path or the shared query API must document a rate/concurrency contract for evaluation queries. This is an architectural constraint, not an implementation detail.
+**Storage** defines flat top-level columns: `service`, `env`, `host`, `version`.
 
-**Conflict 11 — "No data" semantics.**
-An alert rule with condition `metric X > threshold` must distinguish between: (a) the metric exists and is below threshold (OK), (b) the metric exists and is above threshold (ALERTING), and (c) the metric has not been reported for N minutes (NO DATA, which is often itself an alert condition). A storage query API that returns an empty result set for case (c) is indistinguishable from a query with no matching data. Alerts must know which case it is in to evaluate the rule correctly. If storage does not expose "last seen" metadata or a "no data" sentinel, alerts must implement its own absence detection by tracking expected reporting intervals — which is complex and error-prone.
+**Frontend** and **Alerts** both expect flat names (`service`, `env`, `host`) in query responses and filters.
 
-**Required decision:** storage query API must return a `last_seen` timestamp or a boolean `has_data` field in results, not just an empty array, so alerts can distinguish absence from below-threshold.
+Impact: ingestion forwards `service.name`; storage has no column for `service.name`; the `service` column is never populated; all cross-signal correlation, all service-scoped queries, all alert group-by operations return empty results with no error.
 
-**Conflict 12 — Group-by and multi-dimensional evaluation.**
-A typical alert rule is: "error rate for any service in environment=production exceeds 5%." This requires a group-by query: compute error rate grouped by `service_name`, then threshold-evaluate each group independently. If the query API does not support `group_by`, alerts must either (a) query all data and aggregate in memory — which is untenable at scale — or (b) know all possible service names in advance and issue N individual queries, one per service. Neither is acceptable.
+There is no documented normalization step that performs this mapping. Ingestion's identity normalizer (`§7`) says it validates `resource.service.name` but does not say it renames the field.
 
-**Required decision:** metric query API must support `group_by` on tag dimensions. This is an alerts-driven requirement that storage must know before designing the query API.
-
-**Conflict 13 — Evaluation window semantics.**
-Alert rules evaluate over a time window (e.g., "p99 latency over the last 5 minutes exceeds 500ms"). The query API must support `start`, `end`, and `step` parameters with well-defined semantics for what happens at window boundaries. If storage returns inclusive-start/exclusive-end intervals and alerts computes inclusive-start/inclusive-end windows, the evaluation time range is off by one data point — small for most cases, but critical for high-cardinality, short-window rules.
-
-**Required decision:** time range query semantics (inclusive/exclusive bounds) must be documented in the query API contract and must be identical for all consumers.
+**Resolution required:** normalization to flat field names must be explicitly owned. Proposed: the ingestion identity normalizer maps OTel resource attributes to canonical flat names before forwarding. The mapping must be documented as a contract.
 
 ---
 
-## 2. Missing Decisions That Will Block Implementation
+### Conflict 3 — Write architecture: write API vs. direct ClickHouse
 
-### 2.1 Canonical Timestamp Format
-- **Blocking:** Ingestion schema, storage schema, query API response format, frontend display logic, alert evaluation window computation.
-- **Decision required:** one wire format (proposed: Unix nanoseconds int64 for internal representation; ISO 8601 string in query API responses for frontend consumption).
+**Ingestion** (`§4, §8`): "The storage agent will expose a write API (details TBD). Ingestion does not write to storage directly." Open question S1: "What write API does storage expose? (HTTP REST, gRPC, direct DB?)"
 
-### 2.2 Canonical Tag/Label Key Names
-- **Blocking:** Every cross-signal feature. If ingestion writes `service` and storage indexes `service_name` and alerts queries `svc`, cross-signal correlation returns empty results with no error.
-- **Decision required:** exact string names for universal identity fields. See Section 4.1.
+**Storage** (`§5.10`): "Ingestion must write to ClickHouse in the formats described above." Open issue 3: "HTTP bulk insert vs. ClickHouse native protocol."
 
-### 2.3 Trace Correlation Strategy
-- **Blocking:** Frontend trace explorer, log-to-trace linking, alert rules on trace data.
-- **Decision required:** are trace_id and span_id propagated through log events? If yes, how is this enforced at ingestion? If no, log-to-trace correlation is impossible regardless of UI design.
+These are contradictory architectural positions. Ingestion expects storage to expose an application-layer write API. Storage assumes ingestion speaks ClickHouse's HTTP/native protocol directly. If ingestion implements an HTTP client calling a storage service endpoint, and storage never builds that endpoint (only exposes ClickHouse), they will never connect.
 
-### 2.4 Metric Type Taxonomy
-- **Blocking:** Ingestion payload schema, storage schema, alert rule evaluation (you cannot compute `rate()` on a gauge).
-- **Decision required:** canonical list of supported metric types and their payload shapes. At minimum: `gauge`, `counter`, `histogram`. Derived types like `summary` can be deferred.
+**Resolution required:** decide which architecture before either agent writes a line of implementation code. Two valid options:
+- Option A: ingestion writes to ClickHouse directly via ClickHouse HTTP (`INSERT INTO ... FORMAT JSONEachRow`). No storage write service needed. Ingestion must know ClickHouse connection details.
+- Option B: storage exposes a write API (HTTP POST) that ingestion calls. Storage owns the ClickHouse write logic. Ingestion has no direct ClickHouse dependency.
 
-### 2.5 Authentication on the Ingestion API
-- **Blocking:** Ingestion cannot design its intake API without knowing auth model. Frontend cannot make API calls to query layer without knowing auth model.
-- **Decision required:** for v1, is ingestion unauthenticated (local/trusted network only), API-key authenticated (single key per deployment), or token-authenticated? This affects how the Node.js agent is configured by users.
-
-### 2.6 Ingestion Acknowledgment Semantics
-- **Blocking:** Whether a 200 from the ingestion API means "received" or "written to storage" changes the reliability guarantees the platform advertises. Affects whether agents need to retry on failure.
-- **Decision required:** ingestion acks on receipt (at-least-once guarantee with possible storage delay) or on persistence (synchronous write path with higher latency). Proposed: ack on receipt for v1 with documented at-least-once semantics.
-
-### 2.7 Retention Policy
-- **Blocking:** Alert rules that reference data older than the retention window will fail. Frontend must not allow users to query outside the retention window. Storage must design with retention in mind (not bolt it on later).
-- **Decision required:** default retention period per signal type. These may differ (metrics: 30 days, logs: 7 days, traces: 3 days is a common starting point).
-
-### 2.8 Cardinality Limits
-- **Blocking:** Storage cannot design indexing without knowing the maximum number of unique tag value combinations. Frontend cannot design tag filter UI without knowing what to expect.
-- **Decision required:** maximum tag count per event, maximum unique tag values per key. These are hard limits enforced at ingestion.
+Option A is simpler and lower-latency. Option B provides a cleaner abstraction boundary. Choose one. Document it in INTERFACES.md.
 
 ---
 
-## 3. Terminology Inconsistencies to Resolve
+### Conflict 4 — Histogram storage format
 
-Each of these inconsistencies will result in different subsystems using different terms for the same concept. That leads to confusion in code, naming conflicts in shared types, and UI labels that don't match the API field names.
+**Ingestion** (`§6.1`): "For `histogram` and `summary`, the client sends pre-aggregated buckets as a JSON object in `value` (shape TBD with storage agent)."
 
-| Concept | Likely ingestion term | Likely storage term | Likely frontend term | Likely alerts term | **Canonical term (proposed)** |
+**Storage** (`§5.3`): "Histogram/summary raw data: store pre-bucketed values as separate rows with a `le` label key (Prometheus convention)."
+
+These are two different representations. Ingestion assumes one JSON object per histogram event. Storage expects N rows per histogram (one per bucket boundary), each a normal metric row with an `le` tag. The transformation from one to the other is non-trivial and is owned by nobody. Storage open issue #2 acknowledges this but leaves it unresolved.
+
+**Resolution required:** the histogram wire format (what ingestion sends to storage) must be agreed before Phase 2. Proposed: ingestion receives a bucket list from the SDK and explodes it into per-bucket rows before writing, using the `le` label convention storage expects. The ingestion-to-storage contract specifies the exploded row format.
+
+---
+
+### Conflict 5 — Span field naming: `name` vs. `operation`
+
+**Ingestion** span payload (`§6.3`): span name is in the `name` field: `"name": "GET /api/users/:id"`.
+
+**Storage** spans table (`§5.5`): the column is `operation`.
+
+**Frontend** trace detail response (`§7.5`): the field is `name` in the span object.
+
+The rename `name → operation` is not documented anywhere. If ingestion writes a `name` key and storage has an `operation` column, the column is never populated and trace waterfalls display blank operation names.
+
+**Resolution required:** canonical field name is `name` at the API surface. Storage may use `operation` as a column name internally but must expose it as `name` in query responses.
+
+---
+
+### Conflict 6 — Span duration unit: `duration_ms` vs. `duration_ns`
+
+**Ingestion** (`§6.3`): `"duration_ms": 190` — milliseconds.
+
+**Storage** spans table (`§5.5`): `duration_ns UInt64` — nanoseconds. Storage constraint #1 requires sub-millisecond precision.
+
+These conflict directly. Ingestion either needs to convert to nanoseconds before writing, or storage needs to define its acceptable input unit. No conversion is documented.
+
+**Resolution required:** duration is nanoseconds at the ingestion-to-storage boundary. Ingestion converts `duration_ms` from SDK payloads to `duration_ns` before forwarding.
+
+---
+
+### Conflict 7 — Log field naming: `body` vs. `message`
+
+**Ingestion** log payload (`§6.2`): the log text field is `body`.
+
+**Storage** logs table (`§5.4`): the column is `message`.
+
+**Frontend** log response (`§7.4`): the field is `message`.
+
+Mapping `body → message` is not documented.
+
+**Resolution required:** canonical field name is `message`. Ingestion renames `body` to `message` during normalization.
+
+---
+
+### Conflict 8 — Log severity: string passthrough vs. integer enum
+
+**Ingestion** (`§6.2`): severity is a string: `"TRACE | DEBUG | INFO | WARN | ERROR | FATAL"`. Ingestion normalizes to OTel severity levels but does not specify whether it converts to an integer.
+
+**Storage** (`§5.4`): severity is `Enum8('trace'=1, 'debug'=2, 'info'=3, 'warn'=4, 'error'=5, 'fatal'=6)` — an integer enum.
+
+**Frontend** (`§8`): severity/level is `"DEBUG", "INFO", "WARN", "ERROR"` — a string.
+
+Ingestion forwards a string; storage expects an integer. Unless the forwarder converts, storage will fail to insert the enum value.
+
+**Resolution required:** ingestion converts severity strings to integer enum values before forwarding to storage. Storage returns both the integer and the string label in query responses. Frontend uses the string.
+
+---
+
+### Conflict 9 — `trace_index` population: assigned to ingestion, unknown to ingestion
+
+**Storage** (`§5.10, constraint 5`): "Ingestion is responsible for detecting root spans and upserting `trace_index` via ReplacingMergeTree semantics."
+
+**Ingestion design**: no mention of `trace_index` anywhere. The storage forwarder sends spans to a write endpoint; there is no logic for detecting root spans or populating a secondary table.
+
+This is not a naming conflict — storage has assigned a specific operational responsibility to ingestion that ingestion has not agreed to or designed for.
+
+**Resolution required:** either ingestion explicitly accepts this responsibility and adds root-span detection logic, or `trace_index` is populated by a ClickHouse materialized view on the `spans` table (eliminating the dependency on ingestion). The materialized view approach is lower-risk. Storage should own this decision.
+
+---
+
+## 2. Conflicts: Storage vs. Frontend
+
+### Conflict 10 — Query time parameter names: `start`/`end` vs. `from`/`to`
+
+**Storage** query API (`§5.9`): all endpoints use `start` and `end` as time range params.
+
+**Frontend** API requirements (`§7.1`): "All query endpoints accept `from` and `to` as ISO 8601 query params (required)."
+
+This is a total mismatch. Every query the frontend issues will omit `start` and `end`. Storage returns HTTP 400 (it enforces mandatory time params). Every page of the UI that queries time-series data returns an error or empty result. Nothing works.
+
+**Resolution required:** one canonical name. Proposed: `start` and `end` (storage and alerts already agree on this). Frontend must align.
+
+---
+
+### Conflict 11 — Trace list endpoint path: `/traces/list` vs. `/traces/query`
+
+**Storage** (`§5.9`): `GET /api/v1/traces/list`
+
+**Frontend** (`§7.5`): `GET /api/v1/traces/query`
+
+The path does not match. Frontend will receive 404.
+
+**Resolution required:** canonical path is `/api/v1/traces` with a query string. Eliminates both the `/list` and `/query` ambiguity.
+
+---
+
+### Conflict 12 — Metric series response structure
+
+**Storage** metric query response (`§5.9`):
+```json
+{
+  "metric": "http.request.duration_ms",
+  "series": [
+    { "timestamp": "2024-01-01T00:00:00Z", "value": 42.3 }
+  ]
+}
+```
+One flat array of `{timestamp, value}` pairs. No per-series label grouping.
+
+**Frontend** metric query expectation (`§7.3`):
+```json
+{
+  "series": [
+    {
+      "labels": { "service": "api-server", "env": "production" },
+      "points": [{ "timestamp": "...", "value": 287.4 }]
+    }
+  ]
+}
+```
+Array of series, each with a `labels` object and a nested `points` array.
+
+These are structurally incompatible. A frontend chart expecting `series[i].labels` and `series[i].points` against storage's flat format will crash on the first property access. Multi-series charts (multiple services overlaid) are impossible with storage's flat format.
+
+**Resolution required:** storage must return the grouped format. When no `group_by` is specified, `labels` contains only the filter dimensions. This is also required for alerts (see Conflict 17).
+
+---
+
+### Conflict 13 — `/api/v1/services` endpoint: metadata only vs. metrics-enriched
+
+**Storage** (`§5.9`): `GET /api/v1/services` returns:
+```json
+{ "services": [{ "name": "api-server", "env": "production", "language": "nodejs" }] }
+```
+Metadata from PostgreSQL only. No metrics.
+
+**Frontend** (`§7.2`): `GET /api/v1/services` requires:
+```json
+{
+  "services": [{
+    "service": "api-server",
+    "env": "production",
+    "last_seen": "...",
+    "request_rate": 142.3,
+    "error_rate": 0.02,
+    "p99_latency_ms": 312,
+    "log_count": 48201
+  }]
+}
+```
+Five derived metric aggregates per service, computed over the current time range.
+
+These are the same endpoint path returning fundamentally different payloads. Frontend can't render the services list from storage's response. The service-level aggregates (`request_rate`, `error_rate`, `p99_latency_ms`, `log_count`) require cross-signal queries that storage has not designed.
+
+This is the most complex missing endpoint in the API surface. It requires: (1) a metric query for request rate and latency, (2) a metric or log query for error rate, (3) a log count query — all scoped to the `from`/`to` time range, all joined by service name.
+
+**Resolution required:** storage must design a dedicated service-summary computation path. This endpoint cannot be a simple metadata lookup. Frontend and storage must agree on the response schema and the time range params before storage designs this endpoint.
+
+---
+
+### Conflict 14 — Missing `GET /api/v1/logs/volume` endpoint
+
+**Frontend** (`§7.4`): requires `GET /api/v1/logs/volume` for the log histogram (counts bucketed by time interval, broken down by level).
+
+**Storage**: this endpoint is not defined anywhere in the storage design.
+
+The log volume histogram in the Log Explorer has no data source.
+
+**Resolution required:** storage must add this endpoint. The response shape frontend specifies (`buckets[].by_level`) is reasonable and should be adopted as the contract.
+
+---
+
+### Conflict 15 — Missing `log_id` field
+
+**Frontend** (`§7.4`): expects a `log_id` field on every log entry for row keying.
+
+**Storage** logs table: no stable unique ID column. ClickHouse's `MergeTree` has no auto-generated row ID. The logs table has no primary key that produces a queryable row identifier.
+
+**Resolution required:** either storage adds a UUID column populated at ingest time, or ingestion generates and forwards a log ID as part of normalization. Without it, the frontend log table has no stable row key, causing React re-render bugs and making the "click to expand row" interaction stateful in an unreliable way.
+
+---
+
+### Conflict 16 — Log severity field name in query response: `severity` vs. `level`
+
+**Storage** log query response (`§5.9`): field is `severity` (the enum string).
+
+**Frontend** log table (`§5.2`): the field is `level`. Frontend renders colored badges keyed on `level`.
+
+**Frontend** identity contract (`§8`): the field is `level`.
+
+Storage returns `severity`; frontend looks for `level`; the severity badge column is always blank.
+
+**Resolution required:** canonical name in query responses is `severity_text` for the string form. Frontend maps `severity_text` to its display logic. Alternatively, storage aliases the field to `level` in responses — but this conflicts with storage's own schema naming. Pick one and document it.
+
+---
+
+### Conflict 17 — Trace status case: lowercase vs. uppercase
+
+**Storage** trace list response (`§5.9`): `"status_code": "error"` (lowercase).
+
+**Frontend** trace list table (`§6.2`): expects `"status": "ERROR"` (uppercase). Frontend filter param: `status=OK` or `status=ERROR`.
+
+**Storage** trace list filter param: `status=ok` or `status=error` (lowercase).
+
+The case mismatch affects both the response parsing and the filter parameter. Frontend will never match a filter or render a status badge correctly.
+
+**Resolution required:** lowercase throughout: `ok`, `error`, `unset`. Frontend must align its filter params and badge rendering.
+
+---
+
+## 3. Conflicts: Alerts vs. Storage/Query
+
+### Conflict 18 — Metric series response structure (same as Conflict 12, but from alerts' side)
+
+**Alerts** `MetricQueryResponse` (`§8.1`):
+```typescript
+interface MetricSeries {
+  labels: Record<string, string>;
+  points: Array<{ t: string; v: number }>;
+}
+```
+Expects `labels` per series and short-form `t`/`v` fields on each point.
+
+**Storage** metric response: flat `{ timestamp, value }` with no per-series label grouping.
+
+The field names differ (`t` vs. `timestamp`, `v` vs. `value`) and the structure differs (nested vs. flat). Alerts' evaluator will fail to read any metric data from storage.
+
+**Resolution required:** canonical point format is `{ "timestamp": string, "value": number }`. Alerts must align its internal types. Storage must return the series-with-labels structure (same fix as Conflict 12).
+
+---
+
+### Conflict 19 — `group_by` absent from both query API and alerts query type
+
+**Alerts** `EvaluationConfig` (`§4.2`): supports `group_by?: string[]` — fire independently per tag value combination.
+
+**Alerts** `MetricQuery` (`§8.1`): has `filters: Record<string,string>` but no `group_by` field. Group-by is defined on the evaluation config but not passed through to the query.
+
+**Storage** metric query API (`§5.9`): no `group_by` parameter exists on `GET /api/v1/metrics/query`.
+
+This means: an alert configured to fire per-service (`group_by: ["service"]`) issues a query with no group_by. Storage returns a single aggregated series. The evaluator receives one value and evaluates the entire fleet as one unit. Per-service, per-host, or per-route alerting — any multi-dimensional alert — silently evaluates against the aggregate and misses individual service failures.
+
+**Resolution required:** `group_by` must be added to both (1) the alerts `MetricQuery` type and (2) the storage metric query API. Storage must return a series per group-by value combination. This is not optional — it is a core requirement for multi-service alerting.
+
+---
+
+### Conflict 20 — Log query interface: DSL string vs. structured params
+
+**Alerts** `LogQuery` (`§8.1`): `filter: string` — "query DSL or lucene-style filter expression — format TBD with storage agent."
+
+**Storage** log query (`§5.9`): structured params: `service`, `severity`, `search` (free text), `trace_id`. No DSL, no filter string param.
+
+These are incompatible interfaces. Alerts constructs a `filter` string that storage has no parameter to receive. Alerts open issue #1 acknowledges this is blocking but defers resolution. It must be resolved before Phase 4 log-count monitor implementation.
+
+**Resolution required:** alerts must use storage's structured parameter model for log queries, not a DSL string. The `LogQuery.filter` field should be replaced with explicit structured fields matching storage's API: `service`, `severity_min`, `search`, `trace_id`. Alerts' log filter DSL ambition is deferred or resolved as a query builder in the alerts engine that emits structured params.
+
+---
+
+## 4. Missing Decisions That Block Implementation
+
+| # | Decision | Blocking | Proposed answer |
+|---|----------|----------|----------------|
+| M1 | Timestamp unit at ingestion-to-storage boundary | Conflict 1, 6 | Unix nanoseconds. Ingestion converts from SDK milliseconds. |
+| M2 | Resource attribute → flat field normalization owner | Conflict 2 | Ingestion identity normalizer owns the mapping; table below. |
+| M3 | Write architecture: write API or direct ClickHouse | Conflict 3 | Decide before Phase 2. Proposed: direct ClickHouse (Option A). |
+| M4 | Histogram wire format | Conflict 4 | Ingestion explodes bucket list into per-`le` rows. |
+| M5 | Query time params: `from`/`to` or `start`/`end` | Conflict 10 | `start` and `end`. Frontend aligns. |
+| M6 | Trace list endpoint path | Conflict 11 | `GET /api/v1/traces` |
+| M7 | Metric series response structure | Conflicts 12, 18 | Series-with-labels. `{ series: [{ labels: {}, points: [{timestamp,value}] }] }` |
+| M8 | Service summary endpoint design | Conflict 13 | Storage designs; response shape from frontend §7.2 is the requirement. |
+| M9 | `GET /api/v1/logs/volume` endpoint | Conflict 14 | Storage adds it. Response shape from frontend §7.4. |
+| M10 | `log_id` field | Conflict 15 | Ingestion generates UUID per log record; storage stores and returns it. |
+| M11 | Log severity field name in responses | Conflict 16 | `severity_text` (string) in responses. Frontend maps to display. |
+| M12 | Trace status case | Conflict 17 | Lowercase: `ok`, `error`, `unset`. |
+| M13 | `group_by` in metric query API | Conflict 19 | Storage adds `group_by` param. Alerts adds to `MetricQuery` type. |
+| M14 | Log query interface for alerts | Conflict 20 | Alerts uses structured params, not DSL string. |
+| M15 | `trace_index` population owner | Conflict 9 | ClickHouse materialized view (storage owns). Ingestion not responsible. |
+| M16 | `truncated` flag in query responses | — | Storage adds `truncated: bool` to metric and log responses. Alerts requires it. |
+| M17 | `env` values endpoint | Frontend Q3 | `GET /api/v1/environments` returning `{ environments: string[] }`. Storage owns. |
+| M18 | Span `name` canonical field | Conflict 5 | `name` at API surface. Storage may column-name it `operation` internally. |
+
+---
+
+## 5. Terminology Inconsistencies
+
+| Concept | Ingestion | Storage | Frontend | Alerts | Canonical |
 |---|---|---|---|---|---|
-| Identifying name of the emitting service | `service` | `service_name` | `service` | `svc` | `service_name` |
-| Deployment context (prod/staging) | `env` | `environment` | `environment` | `env` | `environment` |
-| Key-value metadata on an event | `tags` | `labels` | `tags` | `dimensions` | `tags` |
-| A single time-series data point | `data_point` | `sample` | `point` | `value` | `data_point` |
-| A distributed trace tree | `trace` | `trace` | `trace` | `trace` | `trace` |
-| An individual span within a trace | `span` | `span` | `span` | `operation` | `span` |
-| The root span of a trace | `root_span` | `entry_span` | `root` | — | `root_span` |
-| A triggered alert condition | `alert` | — | `alert` | `incident` | `alert` (the event), `monitor` (the rule) |
-| The rule that defines an alert | `rule` | — | `monitor` | `monitor` | `monitor` |
-| Log importance level | `level` | `severity` | `level` | — | `severity_level` → split: `severity` (int enum), `severity_text` (string) |
-| A named grouping of services | — | — | `service_group` | — | defer to Phase 2 |
-
-**Action required:** each agent must use the canonical term column when naming fields, API parameters, and UI labels. Deviations require a INTERFACES.md amendment, not a unilateral rename.
+| Service identifier | `service.name` (resource attr) | `service` (column) | `service` (field) | `service` (filter) | `service_name` |
+| Deployment env | `deployment.environment` | `env` | `env` | `env` | `environment` |
+| Log text content | `body` | `message` | `message` | `message` | `message` |
+| Log importance | `severity` (string) | `severity` (enum int) | `level` (string) | `level` (string) | `severity_text` (string) + `severity_number` (int) |
+| Span operation name | `name` | `operation` | `name` | — | `name` |
+| Trace status value | `ok`/`error`/`unset` | lowercase | `OK`/`ERROR` | `ok`/`error` | lowercase: `ok`, `error`, `unset` |
+| Query start bound | `start` | `start` | `from` | `start` | `start` |
+| Query end bound | `end` | `end` | `to` | `end` | `end` |
+| Metric rollup interval | — | `step` | `interval` | `step_seconds` | `step` (duration string e.g. `1m`) |
+| Data point fields | — | `timestamp`, `value` | `timestamp`, `value` | `t`, `v` | `timestamp`, `value` |
+| Alert rule entity | — | — | "alert rule" | `Monitor` | `Monitor` (rule), `Alert` (instance) |
 
 ---
 
-## 4. Proposed Unified Contract Layer
+## 6. Proposed Unified Contract Layer
 
-### 4.1 Canonical Identity Fields (All Signal Types)
+This section is the canonical reference. When any subsystem's design conflicts with what is written here, this document wins. Changes require sign-off from affected agents.
 
-These fields are required on every ingested event of every type. Ingestion must reject events missing required fields. Storage must index all required fields.
+### 6.1 Canonical Identity Fields
 
-```
-service_name  string   required  Logical service name. e.g. "checkout-api"
-environment   string   required  Deployment environment. e.g. "production", "staging"
-timestamp     int64    required  Unix nanoseconds (UTC). Must not be in the future by >60s.
-host          string   optional  Hostname or pod name of the emitting process.
-version       string   optional  Service version or git SHA. e.g. "v1.2.3" or "abc1234"
-```
+Every telemetry event of every type must carry these fields at the top level (not nested inside a `resource` block). Ingestion is responsible for normalizing from OTel resource attributes before forwarding.
 
-**Enforcement:** ingestion rejects any event where `service_name`, `environment`, or `timestamp` is absent or null. It does not reject events with unknown extra fields (forward-compatible intake).
+| Canonical field | OTel source attribute | Type | Required |
+|---|---|---|---|
+| `service_name` | `service.name` | string | yes |
+| `environment` | `deployment.environment` | string | yes |
+| `host` | `host.name` | string | optional |
+| `version` | `service.version` | string | optional |
+| `timestamp` | `timestamp` | int64 (Unix nanoseconds) | yes |
 
----
-
-### 4.2 Metric Event Schema
+### 6.2 Canonical Metric Event (Ingestion → Storage)
 
 ```json
 {
-  "service_name": "checkout-api",
+  "service_name": "api-server",
   "environment": "production",
-  "timestamp": 1743610032000000000,
   "host": "worker-1",
+  "version": "v1.2.3",
+  "timestamp": 1711234567890000000,
+  "name": "http.request.duration",
+  "type": "gauge | counter | histogram",
+  "unit": "ms",
+  "value": 143.2,
+  "tags": { "http.method": "POST", "http.status_code": "200" }
+}
+```
+
+For `histogram`, the forwarded form is one row per bucket (exploded by ingestion):
+```json
+{
+  "service_name": "api-server",
+  "environment": "production",
+  "timestamp": 1711234567890000000,
   "name": "http.request.duration",
   "type": "histogram",
   "unit": "ms",
-  "tags": {
-    "method": "POST",
-    "route": "/v1/checkout",
-    "status_code": "200"
-  },
-  "value": 143.2,
-  "histogram": {
-    "count": 1,
-    "sum": 143.2,
-    "buckets": [
-      {"upper_bound": 50,  "count": 0},
-      {"upper_bound": 100, "count": 0},
-      {"upper_bound": 250, "count": 1},
-      {"upper_bound": 500, "count": 1}
-    ]
-  }
+  "value": 1,
+  "tags": { "http.method": "POST", "le": "250" }
 }
 ```
+Plus a `_count` row (`le="+Inf"`) and a `_sum` row.
 
-Rules:
-- `type` is required; must be one of: `gauge`, `counter`, `histogram`.
-- `value` is required for `gauge` and `counter`. For `histogram`, `value` is the raw observation; `histogram` block is also required.
-- `unit` is optional but recommended. Ingestion does not validate unit strings.
-- `tags`: max 20 key-value pairs, keys max 64 chars, values max 256 chars. Keys must match `[a-z_][a-z0-9_]*`.
-- Negative `counter` values must be rejected by ingestion.
-
----
-
-### 4.3 Log Event Schema
+### 6.3 Canonical Log Event (Ingestion → Storage)
 
 ```json
 {
-  "service_name": "checkout-api",
+  "log_id": "01HV4...",
+  "service_name": "api-server",
   "environment": "production",
-  "timestamp": 1743610032000000000,
   "host": "worker-1",
-  "severity": 17,
+  "timestamp": 1711234567890000000,
+  "severity_number": 17,
   "severity_text": "ERROR",
-  "message": "Payment gateway timeout after 30s",
+  "message": "Connection refused to postgres at db:5432",
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
   "span_id": "00f067aa0ba902b7",
-  "attributes": {
-    "http.method": "POST",
-    "http.url": "/charge",
-    "error.type": "TimeoutError"
-  }
+  "attributes": { "db.system": "postgresql", "db.name": "users" }
 }
 ```
 
-Rules:
-- `severity` is required; integer using OpenTelemetry severity number scale (1–24). Ingestion must map common string forms: `"DEBUG"→5`, `"INFO"→9`, `"WARN"→13`, `"ERROR"→17`, `"FATAL"→21`. Unknown strings map to `0` (unspecified), not rejected.
-- `severity_text` is optional; preserved as-is from the source for display.
-- `message` is required; max 64KB. Ingestion truncates with a `[truncated]` suffix, does not reject.
-- `trace_id` and `span_id` are optional but strongly recommended. When present, they must match the hex formats below.
-- `attributes`: max 50 key-value pairs, values may be string, number, or boolean.
+Ingestion severity mapping (string → `severity_number`):
+`TRACE→1, DEBUG→5, INFO→9, WARN→13, ERROR→17, FATAL→21`. Unknown → `0`.
 
----
-
-### 4.4 Trace Span Schema
+### 6.4 Canonical Trace Span Event (Ingestion → Storage)
 
 ```json
 {
-  "service_name": "checkout-api",
+  "service_name": "api-server",
   "environment": "production",
   "host": "worker-1",
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
   "span_id": "00f067aa0ba902b7",
-  "parent_span_id": "b7ad6b7169203331",
-  "operation_name": "POST /v1/checkout",
-  "start_time": 1743610032000000000,
-  "end_time":   1743610032143200000,
-  "duration_ns": 143200000,
+  "parent_span_id": "b9c7c989f97918e1",
+  "name": "POST /v1/checkout",
+  "kind": "server",
+  "start_time": 1711234567800000000,
+  "end_time": 1711234567990000000,
+  "duration_ns": 190000000,
   "status": "ok",
   "status_message": "",
-  "kind": "server",
-  "attributes": {
-    "http.method": "POST",
-    "http.route": "/v1/checkout",
-    "http.status_code": 200,
-    "db.system": "postgresql"
-  }
+  "attributes": { "http.method": "POST", "http.status_code": "200" }
 }
 ```
 
-Rules:
-- `trace_id`: required; 32 lowercase hex characters (128-bit).
-- `span_id`: required; 16 lowercase hex characters (64-bit).
-- `parent_span_id`: optional; absent or null indicates root span. When present, must be a valid 16-char hex string.
-- `start_time`, `end_time`: both required; Unix nanoseconds. Ingestion must reject spans where `end_time < start_time`.
-- `duration_ns`: ingestion computes this as `end_time - start_time`; if provided by the client, ingestion validates it matches (within 1ns tolerance) and rejects if it does not.
-- `status`: required; enum `"unset" | "ok" | "error"`.
-- `kind`: required; enum `"internal" | "server" | "client" | "producer" | "consumer"`.
-- `attributes`: max 128 key-value pairs; values may be string, number, boolean, or array of string/number/boolean.
+All times are Unix nanoseconds. `duration_ns` is computed by ingestion from `end_time - start_time`. If the client sends `duration_ms`, ingestion converts before forwarding.
 
----
+### 6.5 Ingestion API
 
-### 4.5 Ingestion API Contract
+| Method | Path | Body | Success |
+|--------|------|------|---------|
+| POST | `/v1/metrics` | `{ "metrics": [...] }` | 202 |
+| POST | `/v1/logs` | `{ "logs": [...] }` | 202 |
+| POST | `/v1/traces` | `{ "spans": [...] }` | 202 |
 
-**Base path:** `/v1/ingest`
-**Auth (v1):** API key via `X-Api-Key` header. Missing or invalid key returns 401. For v1, one global API key per deployment.
+- 202 = received. Does not guarantee persistence.
+- Partial batches accepted. Rejected events listed in response body.
+- Auth: `X-Api-Key` header (v1: single global key).
 
-| Method | Path | Body | Success | Notes |
-|--------|------|------|---------|-------|
-| POST | `/v1/ingest/metrics` | `{"metrics": [...]}` | 202 | Batch of metric events |
-| POST | `/v1/ingest/logs` | `{"logs": [...]}` | 202 | Batch of log events |
-| POST | `/v1/ingest/traces` | `{"spans": [...]}` | 202 | Batch of spans (not complete traces) |
+### 6.6 Query API
 
-**Ack semantics:** 202 means "received and queued for storage." It does not mean "written to storage." Callers should implement retry with exponential backoff on 5xx. 4xx errors are not retried (validation failure).
+All endpoints under `/api/v1`. Auth: same API key.
 
-**Error response format:**
+**Shared conventions:**
+- Time params: `start` and `end` (ISO 8601 string). Required on all time-series endpoints.
+- All timestamps in responses: ISO 8601 strings.
+- Pagination: cursor-based. `next_cursor` in response; `cursor` in request.
+- Trace and log status values: lowercase (`ok`, `error`, `unset`).
+
+**Endpoints:**
+
+| Method | Path | Owner | Consumers |
+|--------|------|-------|-----------|
+| GET | `/api/v1/metrics/query` | Storage | Frontend, Alerts |
+| GET | `/api/v1/metrics/names` | Storage | Frontend |
+| GET | `/api/v1/logs` | Storage | Frontend, Alerts |
+| GET | `/api/v1/logs/volume` | Storage | Frontend |
+| GET | `/api/v1/traces` | Storage | Frontend, Alerts |
+| GET | `/api/v1/traces/:trace_id` | Storage | Frontend |
+| GET | `/api/v1/services` | Storage | Frontend |
+| GET | `/api/v1/services/:service_name/summary` | Storage | Frontend |
+| GET | `/api/v1/environments` | Storage | Frontend |
+
+**Metric query response (canonical):**
 ```json
 {
-  "status": 400,
-  "error": "validation_failed",
-  "message": "3 of 10 events rejected",
-  "rejected": [
-    {"index": 2, "reason": "missing required field: service_name"},
-    {"index": 5, "reason": "timestamp in future by 300s"},
-    {"index": 9, "reason": "counter value is negative: -1.5"}
+  "metric": "http.request.duration",
+  "step": "1m",
+  "truncated": false,
+  "series": [
+    {
+      "labels": { "service_name": "api-server", "http.method": "POST" },
+      "points": [
+        { "timestamp": "2024-01-01T00:00:00Z", "value": 42.3 }
+      ]
+    }
   ]
 }
 ```
 
-Partial batches are accepted: valid events in a batch are processed even if some events are rejected. The response indicates which indices were rejected and why.
-
-**Content-Type:** `application/json` for all endpoints in v1. OTLP/protobuf may be added in a later phase via `/v1/ingest/otlp`.
-
----
-
-### 4.6 Query API Contract
-
-**Base path:** `/v1/query`
-**Auth:** same API key mechanism as ingestion.
-
-#### Metric range query
-```
-GET /v1/query/metrics
-  ?name=http.request.duration       required
-  &service_name=checkout-api        optional
-  &environment=production           optional
-  &start=1743610032000000000        required, Unix ns
-  &end=1743610032143200000          required, Unix ns
-  &step=60000000000                 optional, Unix ns, default = auto
-  &group_by=method,route            optional, comma-separated tag keys
-  &agg=avg                          optional, default=avg; options: avg,sum,min,max,p50,p90,p95,p99
-  &tags[method]=POST                optional, tag filter
-```
-
-Response:
+**Log query response (canonical):**
 ```json
 {
-  "name": "http.request.duration",
-  "step_ns": 60000000000,
-  "series": [
+  "logs": [
     {
-      "tags": {"method": "POST", "route": "/v1/checkout"},
-      "data_points": [
-        {"timestamp": 1743610032000000000, "value": 143.2},
-        {"timestamp": 1743610092000000000, "value": 156.8}
-      ]
+      "log_id": "01HV4...",
+      "timestamp": "2024-01-01T00:00:01.123Z",
+      "severity_text": "ERROR",
+      "severity_number": 17,
+      "service_name": "api-server",
+      "environment": "production",
+      "host": "worker-1",
+      "message": "Connection refused",
+      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "span_id": "00f067aa0ba902b7",
+      "attributes": {}
     }
   ],
-  "has_data": true,
-  "last_seen_ns": 1743610032000000000
+  "next_cursor": "...",
+  "total_matched": 1204,
+  "truncated": false
 }
 ```
 
-`has_data: false` and an empty `series` array is returned when no data exists for the query window. `last_seen_ns` is the timestamp of the most recent data point for this metric name + tag combination, regardless of the query window. Alerts uses this to detect "no data" conditions.
-
-#### Log search
-```
-GET /v1/query/logs
-  ?service_name=checkout-api        optional
-  &environment=production           optional
-  &start=1743610032000000000        required
-  &end=1743610092000000000          required
-  &severity_min=13                  optional, integer
-  &q=payment+timeout                optional, full-text search string
-  &trace_id=4bf92f3577b34da6a...    optional
-  &limit=100                        optional, default=100, max=1000
-  &cursor=<opaque string>           optional, for pagination
-```
-
-Response:
-```json
-{
-  "logs": [...],
-  "next_cursor": "<opaque string or null>",
-  "total_matched": 1432
-}
-```
-
-`total_matched` is an estimate. `next_cursor` is null when no more results exist. Clients must not assume offset-based behavior — the only navigation supported is forward-cursor.
-
-#### Trace search
-```
-GET /v1/query/traces
-  ?service_name=checkout-api        optional
-  &environment=production           optional
-  &start=1743610032000000000        required
-  &end=1743610092000000000          required
-  &status=error                     optional, enum: ok|error|unset
-  &duration_min_ns=100000000        optional
-  &limit=50                         optional, default=50, max=500
-  &cursor=<opaque string>           optional
-```
-
-Response:
+**Trace list response (canonical):**
 ```json
 {
   "traces": [
     {
       "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-      "root_service_name": "checkout-api",
-      "root_operation_name": "POST /v1/checkout",
-      "start_time": 1743610032000000000,
-      "duration_ns": 143200000,
-      "status": "error",
-      "span_count": 12
+      "root_service_name": "api-server",
+      "root_name": "POST /v1/checkout",
+      "start_time": "2024-01-01T00:00:01Z",
+      "duration_ns": 190000000,
+      "span_count": 8,
+      "status": "ok",
+      "environment": "production"
     }
   ],
   "next_cursor": null
 }
 ```
 
-#### Trace detail
-```
-GET /v1/query/traces/{trace_id}
-```
+### 6.7 Alert State Schema
 
-Response: full span tree for the trace. Spans are returned flat, sorted by `start_time`. Clients assemble the tree using `parent_span_id`.
-
-#### Service summary
-```
-GET /v1/query/services/{service_name}/summary
-  ?environment=production           optional
-  &window_ns=300000000000           optional, default=5min
-```
-
-Response:
-```json
-{
-  "service_name": "checkout-api",
-  "environment": "production",
-  "window_ns": 300000000000,
-  "request_rate": 142.3,
-  "error_rate": 0.023,
-  "p50_latency_ns": 43200000,
-  "p95_latency_ns": 143200000,
-  "p99_latency_ns": 312000000,
-  "active_alerts": 1,
-  "last_seen_ns": 1743610032000000000
-}
-```
-
-This endpoint exists so that a service list page can be rendered with one query per service, not five. Storage is responsible for implementing this with appropriate pre-aggregation. Frontend must not implement the aggregation client-side.
-
-**Time range semantics:** all time ranges are `[start, end)` — inclusive start, exclusive end. All consumers must use this convention. Alert evaluation windows use the same semantics.
-
----
-
-### 4.7 Alert State Schema
+Canonical field names for the alerts API surface (consumed by frontend):
 
 ```json
 {
   "id": "mon_abc123",
-  "name": "High error rate — checkout-api",
-  "service_name": "checkout-api",
+  "name": "High error rate — api-server",
+  "service_name": "api-server",
   "environment": "production",
   "status": "alerting",
+  "previous_status": "ok",
   "severity": "critical",
-  "condition": {
-    "metric": "http.request.duration",
-    "agg": "p99",
-    "threshold": 500,
-    "operator": ">",
-    "window_ns": 300000000000,
-    "group_by": ["service_name"]
-  },
   "triggered_at": "2026-04-02T14:00:00Z",
   "resolved_at": null,
   "last_evaluated_at": "2026-04-02T14:05:00Z",
-  "notification_channels": ["ops-slack"],
   "breaching_groups": [
-    {"service_name": "checkout-api", "value": 843.2}
+    { "service_name": "api-server", "value": 843.2 }
   ]
 }
 ```
 
-Fields:
-- `status`: `"ok" | "alerting" | "no_data"`. Never null.
-- `severity`: `"info" | "warning" | "critical"`. Set on the monitor definition, not derived from the condition.
-- `triggered_at`: ISO 8601 string. Null when status is `"ok"`.
-- `resolved_at`: ISO 8601 string. Null unless the alert was previously triggered and is now resolved (enables duration calculation).
-- `breaching_groups`: which group-by dimension values are currently in violation. Empty array when status is `"ok"`.
-
-**Alert state API:**
-
-| Method | Path | Notes |
-|--------|------|-------|
-| GET | `/v1/alerts/monitors` | List all monitors with current status |
-| GET | `/v1/alerts/monitors/{id}` | Single monitor detail |
-| POST | `/v1/alerts/monitors` | Create monitor (alerts agent owns) |
-| PUT | `/v1/alerts/monitors/{id}` | Update monitor |
-| DELETE | `/v1/alerts/monitors/{id}` | Delete monitor |
-| GET | `/v1/alerts/incidents` | Active incidents (status=alerting) |
-
-**State change delivery to frontend:** frontend polls `GET /v1/alerts/incidents` on a fixed interval (recommended: 30 seconds). There is no push/websocket mechanism in v1. Alerts does not call the frontend; the frontend calls alerts.
-
 ---
 
-## 5. Proposed Structure for INTERFACES.md
+## 7. Proposed INTERFACES.md Structure
 
 ```markdown
 # INTERFACES.md
 
-## Purpose
-Source of truth for all cross-subsystem contracts. No agent may implement
-against an interface not documented here. All changes require sign-off from
-affected agents listed on each section.
+## How to Use
+Source of truth for cross-subsystem contracts. No agent implements against
+an undocumented interface. Changes require reviewer sign-off + sign-off from
+all affected agents listed per section.
 
-## Status legend
-- AGREED: signed off by all affected agents; safe to implement against
-- PROPOSED: drafted by reviewer; requires agent sign-off
-- OPEN: decision not yet made; do not implement against this section
+Status values: AGREED | PROPOSED | OPEN
 
 ---
 
-## 0. Open Decisions Log
-| # | Decision | Blocking agents | Status | Owner |
-|---|----------|----------------|--------|-------|
-| 1 | Storage stack | All | OPEN | Storage |
-| 2 | Sampling policy | Ingestion, Alerts | OPEN | Ingestion |
-| 3 | OTLP support timeline | Ingestion | OPEN | Ingestion |
-| 4 | Histogram storage format | Storage, Ingestion | OPEN | Storage |
-| 5 | Auth token scope (per-service vs global) | Ingestion | OPEN | [TBD] |
+## §0 Open Decisions Log
+Table of unresolved decisions blocking implementation (M1–M18 from review).
 
----
+## §1 Canonical Identity Fields
+Status: PROPOSED | Affects: all agents
+- Universal required fields
+- OTel attribute → flat field mapping table
+- Enforcement: who rejects, when
 
-## 1. Canonical Identity Fields
-Status: PROPOSED
-Affects: Ingestion, Storage, Frontend, Alerts
-Sign-off required from: all agents
+## §2 Metric Event Schema (Ingestion → Storage)
+Status: PROPOSED | Affects: Ingestion, Storage
+- Field table with types, units, constraints
+- Histogram exploded-row format
+- Tags constraints (max count, key format)
 
-### 1.1 Universal required fields
-### 1.2 Universal optional fields
-### 1.3 Field naming rules
+## §3 Log Event Schema (Ingestion → Storage)
+Status: PROPOSED | Affects: Ingestion, Storage
+- Field table
+- Severity number mapping table
+- log_id generation ownership
+- trace_id/span_id format constraints
 
----
+## §4 Trace Span Schema (Ingestion → Storage)
+Status: PROPOSED | Affects: Ingestion, Storage
+- Field table
+- Timestamp unit: nanoseconds
+- duration_ns computation rule
+- status enum (lowercase)
 
-## 2. Metric Event Schema
-Status: PROPOSED
-Affects: Ingestion, Storage
-Sign-off required from: Ingestion, Storage
+## §5 Ingestion API (External Boundary)
+Status: PROPOSED | Affects: Ingestion (owns), Storage
+- Endpoint map
+- Auth mechanism
+- 202 ack semantics
+- Partial failure error format
+- SDK timestamp conversion responsibilities
 
-### 2.1 Field definitions
-### 2.2 Type taxonomy (gauge, counter, histogram)
-### 2.3 Histogram payload shape
-### 2.4 Validation rules and rejection behavior
+## §6 Query API (Storage → Frontend + Alerts)
+Status: PROPOSED | Affects: Storage (owns), Frontend, Alerts
+- §6.1 Metric query — params, group_by, response shape
+- §6.2 Log query — params, count_only, volume endpoint, response shape
+- §6.3 Trace list query — params, response shape
+- §6.4 Trace detail query
+- §6.5 Services list + summary endpoint
+- §6.6 Environments list endpoint
+- §6.7 Shared conventions (start/end, cursor, lowercase status)
+- §6.8 truncated flag semantics
 
----
+## §7 Alert State Schema (Alerts → Frontend)
+Status: PROPOSED | Affects: Alerts (owns), Frontend
+- Monitor object schema
+- Alert instance schema
+- Status enum values and state machine
+- Polling delivery model
 
-## 3. Log Event Schema
-Status: PROPOSED
-Affects: Ingestion, Storage
-Sign-off required from: Ingestion, Storage
-
-### 3.1 Field definitions
-### 3.2 Severity integer mapping
-### 3.3 Trace correlation fields (trace_id, span_id)
-### 3.4 Validation rules
-
----
-
-## 4. Trace Span Schema
-Status: PROPOSED
-Affects: Ingestion, Storage, Frontend
-Sign-off required from: Ingestion, Storage, Frontend
-
-### 4.1 Field definitions
-### 4.2 Span kind taxonomy
-### 4.3 Status taxonomy
-### 4.4 Root span identification
-### 4.5 Validation rules
-
----
-
-## 5. Ingestion API (External Boundary)
-Status: PROPOSED
-Affects: Ingestion (owns), all consumers
-Sign-off required from: Ingestion, Storage
-
-### 5.1 Endpoint map
-### 5.2 Auth mechanism
-### 5.3 Batch format
-### 5.4 Acknowledgment semantics
-### 5.5 Partial failure error format
-### 5.6 Rate limits (v1: undecided)
-
----
-
-## 6. Query API (Storage → Frontend + Alerts)
-Status: PROPOSED
-Affects: Storage (owns), Frontend, Alerts
-Sign-off required from: Storage, Frontend, Alerts
-
-### 6.1 Metric range query
-### 6.2 Log search query
-### 6.3 Trace search query
-### 6.4 Trace detail query
-### 6.5 Service summary endpoint
-### 6.6 Time range semantics (inclusive/exclusive)
-### 6.7 Pagination model (cursor-based)
-### 6.8 has_data and last_seen semantics for alert use
-
----
-
-## 7. Alert Evaluation Interface
-Status: OPEN
-Affects: Storage, Alerts
-Sign-off required from: Storage, Alerts
-
-### 7.1 Data delivery model (pull vs push)
-### 7.2 Evaluation query format
-### 7.3 Latency SLO for evaluation queries
-### 7.4 Sampling caveat for trace-based rules
-
----
-
-## 8. Alert State Schema (Alerts → Frontend)
-Status: PROPOSED
-Affects: Alerts (owns), Frontend
-Sign-off required from: Alerts, Frontend
-
-### 8.1 Monitor object schema
-### 8.2 Status enum
-### 8.3 Severity enum
-### 8.4 Breaching groups format
-### 8.5 State change delivery model (polling in v1)
-
----
-
-## 9. Retention Policy
-Status: OPEN
-Affects: Storage (owns), Frontend, Alerts
-Sign-off required from: Storage, Alerts
-
-### 9.1 Default retention per signal type
-### 9.2 Query behavior outside retention window
-### 9.3 Alert rule behavior when evaluation window overlaps retention boundary
+## §8 Retention Policy
+Status: OPEN | Affects: Storage (owns), Frontend, Alerts
+- Per-signal retention periods
+- Query behavior at retention boundary
+- Alert evaluation window overlap behavior
 ```
 
 ---
 
-## 6. Summary: Decisions Agents Must Agree On Before Design
+## 8. Recommended Resolution Order
 
-The following decisions require explicit team agreement before any agent produces a design doc. Each agent's design will embed assumptions about these — divergent assumptions are the source of every integration conflict described in this document.
+The following must be resolved before any agent begins implementation. Grouped by dependency:
 
-| # | Decision | Proposed answer | Must agree before |
-|---|----------|----------------|-------------------|
-| 1 | Canonical timestamp format | Unix nanoseconds (int64) | Any schema design |
-| 2 | Tag representation | `Map<string,string>`, max 20 entries | Ingestion + storage schema |
-| 3 | Metric type taxonomy | gauge, counter, histogram (summary deferred) | Ingestion + storage schema |
-| 4 | Histogram payload shape | bucket list + sum + count | Ingestion + storage schema |
-| 5 | Log severity encoding | Integer (OTel scale) + optional text | Ingestion + storage schema |
-| 6 | Trace ingestion unit | Per-span (not per-trace) | Ingestion pipeline design |
-| 7 | Trace correlation via logs | trace_id + span_id fields on log events | All schema design |
-| 8 | Aggregation responsibility | Server-side (storage provides `step` param) | Storage query API design |
-| 9 | Correlation model (v1) | Client-side join on identity fields | Storage + frontend design |
-| 10 | Pagination model | Cursor-based, forward-only | Storage query API + frontend UI design |
-| 11 | Alert no-data detection | `has_data` + `last_seen_ns` in query response | Storage query API + alerts design |
-| 12 | `group_by` in metric queries | Required query param, implemented by storage | Storage query API + alerts design |
-| 13 | Time range semantics | `[start, end)` inclusive-start exclusive-end | Storage query API + alerts evaluation |
-| 14 | Alert state delivery | Frontend polls; no push in v1 | Frontend + alerts design |
-| 15 | Ingestion ack semantics | 202 = received, not persisted | Ingestion API design |
-| 16 | V1 auth model | Global API key, `X-Api-Key` header | Ingestion + query API design |
-| 17 | Canonical field names | See Section 3 terminology table | All design docs |
-| 18 | Service summary endpoint | Exists as `/v1/query/services/{name}/summary` | Storage + frontend design |
+**Group 1 — Do immediately (blocks all Phase 2 work):**
+- M3: Write architecture (API or direct ClickHouse)
+- M1, M4: Timestamp unit and histogram format (Ingestion + Storage must agree)
+- M2: Normalization mapping table (Ingestion owns)
+
+**Group 2 — Required before storage begins query API (blocks Frontend + Alerts):**
+- M5: `start`/`end` param names (Frontend aligns)
+- M7: Series response structure (Storage redesigns; Alerts aligns `t`/`v` → `timestamp`/`value`)
+- M13: `group_by` added to storage metric query API
+
+**Group 3 — Required before Frontend begins Phase 3:**
+- M6, M8, M9, M11, M12, M17, M18: Endpoint path, service summary, log volume, field naming, status case
+
+**Group 4 — Required before Alerts begins Phase 4:**
+- M14: Log query interface (structured params, not DSL)
+- M16: `truncated` flag
+- M13: `group_by` (same as Group 2)
+
+**Group 5 — Implementation detail, can be deferred to implementation start:**
+- M10: `log_id` generation (ingestion or storage, pick one)
+- M15: `trace_index` population (storage moves to materialized view)
