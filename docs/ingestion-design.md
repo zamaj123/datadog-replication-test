@@ -2,337 +2,303 @@
 
 **Agent:** Ingestion  
 **Stage:** Shared parallel design  
-**Status:** Draft — open for review by Storage and Frontend agents
+**Status:** Aligned to `INTERFACES.md`
 
 ---
 
 ## 1. Objective
 
-Design the telemetry ingestion subsystem responsible for accepting, validating, normalizing, and forwarding metrics, logs, and traces from instrumented services into the storage layer.
+Align the ingestion subsystem design to the source-of-truth contracts in `INTERFACES.md` without changing those contracts.
 
 ---
 
 ## 2. Plan
 
-1. Define a common identity model shared across all signal types.
-2. Define intake payload shapes for metrics, logs, and traces.
-3. Define service boundaries and major ingestion components.
-4. Propose the module/file structure.
-5. Identify open questions for storage and frontend agents.
+1. Accept telemetry on the `/v1` ingestion API.
+2. Normalize incoming OTel resource attributes to the canonical top-level identity fields.
+3. Validate metric, log, and span events against the canonical ingestion-to-storage schemas.
+4. Write accepted rows directly to ClickHouse over HTTP using batched `JSONEachRow`.
+5. Return partial-batch acceptance results exactly as defined in `INTERFACES.md`.
 
 ---
 
 ## 3. Files to Change
 
-- `docs/ingestion-design.md` (this file)
-- `tasks/ingestion.md` (update status)
+- `docs/ingestion-design.md`
 
 ---
 
 ## 4. Assumptions
 
-- Initial target runtime is a Dockerized Node.js application; instrumentation libraries send HTTP POST requests.
-- OpenTelemetry-aligned payload formats are used as the foundation for all three signal types. This is the industry standard and avoids vendor-specific lock-in.
-- A single ingestion gateway handles all signal types and routes internally. Signal-specific services can split out later if scale demands it.
-- Auth/API key validation is out of scope for Phase 2 but the gateway must have a placeholder for it.
-- The storage agent will expose a write API (details TBD). Ingestion does not write to storage directly.
-- Telemetry batching is the responsibility of the client agent/SDK. The intake API accepts batches.
+- `INTERFACES.md` is authoritative for all ingestion-facing and ingestion-to-storage contracts.
+- This document only describes ingestion-owned behavior.
+- Any prior ingestion wording that conflicts with `INTERFACES.md` is superseded by `INTERFACES.md`.
 
 ---
 
-## 5. Common Identity Model
+## 5. Implementation
 
-Every signal payload must carry a `resource` block. This provides consistent identity across metrics, logs, and traces for correlation.
+### 5.1 Canonical Identity Fields
 
-```json
-{
-  "resource": {
-    "service.name":           "string (required)",
-    "service.version":        "string",
-    "host.name":              "string",
-    "host.id":                "string",
-    "deployment.environment": "string (e.g. production, staging)",
-    "telemetry.sdk.name":     "string (e.g. opentelemetry)",
-    "telemetry.sdk.version":  "string"
-  }
-}
-```
+Every forwarded metric row, log row, and span row carries these top-level fields:
 
-`service.name` is required on all payloads. All other resource attributes are optional but strongly recommended. The ingestion layer normalizes and validates this block before forwarding.
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `service_name` | string | yes | Non-empty. Max 256 chars. |
+| `environment` | string | yes | Non-empty. Max 64 chars. |
+| `host` | string | no | `""` when absent. Never `null`. |
+| `version` | string | no | `""` when absent. Never `null`. |
 
----
+Timestamp is a separate required field per schema and is always Unix nanoseconds as `int64` at the ingestion-to-storage boundary.
 
-## 6. Intake Payload Shapes
+#### OTel Resource Attribute Mapping
 
-All endpoints accept `Content-Type: application/json`. All timestamps are Unix milliseconds (int64).
+Ingestion maps these OTel resource attributes before forwarding:
 
-### 6.1 Metrics — `POST /v1/metrics`
-
-```json
-{
-  "resource": { "service.name": "api-server", "..." : "..." },
-  "metrics": [
-    {
-      "name":      "http.request.duration",
-      "type":      "gauge | counter | histogram | summary",
-      "value":     123.4,
-      "timestamp": 1711234567890,
-      "unit":      "ms",
-      "tags": {
-        "http.method":      "GET",
-        "http.status_code": "200",
-        "http.route":       "/api/users"
-      }
-    }
-  ]
-}
-```
-
-**Field notes:**
-- `name`: dot-namespaced string, e.g. `http.request.duration`, `process.cpu.usage`.
-- `type`: one of `gauge`, `counter`, `histogram`, `summary`.
-- `value`: numeric. For `histogram` and `summary`, the client sends pre-aggregated buckets as a JSON object in `value` (shape TBD with storage agent).
-- `tags`: arbitrary key-value string pairs for slicing/grouping.
-- Multiple metric points may be batched in the `metrics` array.
-
-### 6.2 Logs — `POST /v1/logs`
-
-```json
-{
-  "resource": { "service.name": "api-server", "..." : "..." },
-  "logs": [
-    {
-      "timestamp":  1711234567890,
-      "severity":   "TRACE | DEBUG | INFO | WARN | ERROR | FATAL",
-      "body":       "Connection refused to postgres at db:5432",
-      "trace_id":   "4bf92f3577b34da6a3ce929d0e0e4736",
-      "span_id":    "00f067aa0ba902b7",
-      "attributes": {
-        "db.system":    "postgresql",
-        "db.name":      "users",
-        "code.filepath":"src/db/client.js",
-        "code.lineno":  42
-      }
-    }
-  ]
-}
-```
-
-**Field notes:**
-- `severity`: normalized to the OpenTelemetry severity levels.
-- `body`: the raw log message string.
-- `trace_id` / `span_id`: optional but critical for log-trace correlation. Must be propagated by the instrumentation library.
-- `attributes`: structured key-value metadata. The storage agent indexes selected attributes for search.
-- Stack traces should be placed in `attributes["exception.stacktrace"]`.
-
-### 6.3 Traces — `POST /v1/traces`
-
-```json
-{
-  "resource": { "service.name": "api-server", "..." : "..." },
-  "spans": [
-    {
-      "trace_id":       "4bf92f3577b34da6a3ce929d0e0e4736",
-      "span_id":        "00f067aa0ba902b7",
-      "parent_span_id": "b9c7c989f97918e1",
-      "name":           "GET /api/users/:id",
-      "kind":           "server | client | producer | consumer | internal",
-      "start_time":     1711234567800,
-      "end_time":       1711234567990,
-      "duration_ms":    190,
-      "status": {
-        "code":    "ok | error | unset",
-        "message": "db connection refused"
-      },
-      "attributes": {
-        "http.method":      "GET",
-        "http.url":         "/api/users/42",
-        "http.status_code": 200,
-        "db.system":        "postgresql",
-        "db.statement":     "SELECT * FROM users WHERE id=$1"
-      },
-      "events": [
-        {
-          "name":      "exception",
-          "timestamp": 1711234567850,
-          "attributes": { "exception.type": "Error", "exception.message": "..." }
-        }
-      ],
-      "links": []
-    }
-  ]
-}
-```
-
-**Field notes:**
-- A single request body may contain spans from multiple traces.
-- `parent_span_id` absent or null means root span.
-- `duration_ms` is computed on ingest if not provided (`end_time - start_time`).
-- `kind` determines rendering in the service map and trace waterfall.
-- `events` model in-span logs (exceptions, checkpoints).
-
----
-
-## 7. Service Boundaries and Components
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Ingestion Gateway                     │
-│  POST /v1/metrics   POST /v1/logs   POST /v1/traces      │
-│                                                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
-│  │ Metrics  │  │  Logs    │  │  Traces  │  ← Parsers    │
-│  │ Parser   │  │ Parser   │  │  Parser  │               │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘               │
-│       │              │              │                    │
-│       └──────────────┴──────────────┘                   │
-│                       │                                  │
-│              ┌─────────▼──────────┐                      │
-│              │  Identity          │  ← Normalize resource│
-│              │  Normalizer        │    attrs, validate   │
-│              │                    │    service.name etc. │
-│              └─────────┬──────────┘                      │
-│                        │                                  │
-│              ┌─────────▼──────────┐                      │
-│              │  Validation        │  ← Schema validation │
-│              │  Pipeline          │    + error responses │
-│              └─────────┬──────────┘                      │
-│                        │                                  │
-│              ┌─────────▼──────────┐                      │
-│              │  Storage           │  ← Calls storage     │
-│              │  Forwarder         │    write API (TBD)   │
-│              └────────────────────┘                      │
-└─────────────────────────────────────────────────────────┘
-```
-
-**Component responsibilities:**
-
-| Component | Responsibility |
+| OTel resource attribute | Canonical field |
 |---|---|
-| Gateway / HTTP server | Accept requests, basic auth placeholder, route to signal parsers |
-| Signal Parsers (×3) | Deserialize JSON, map fields, compute derived fields (e.g. duration_ms) |
-| Identity Normalizer | Validate `resource.service.name`, normalize tag keys, apply defaults |
-| Validation Pipeline | Enforce required fields, type checks, reject malformed payloads with 400 |
-| Storage Forwarder | Forward normalized payloads to storage write API; handle retries/backpressure |
+| `service.name` | `service_name` |
+| `deployment.environment` | `environment` |
+| `host.name` | `host` |
+| `service.version` | `version` |
 
----
+Rules:
 
-## 8. Proposed Module/File Structure
+- Fields are not nested inside a `resource` block at the ingestion-to-storage boundary.
+- Any OTel resource attribute not listed above is discarded from the resource block.
+- Signal-level attributes are passed through unchanged subject to each signal schema.
+- Ingestion rejects any event where `service_name` or `environment` is absent or empty after normalization.
+- `host` and `version` default to `""`.
 
-```
-ingestion/
-├── cmd/
-│   └── server/
-│       └── main.go              # entrypoint; wires gateway and config
-├── internal/
-│   ├── gateway/
-│   │   ├── server.go            # HTTP server, route registration
-│   │   ├── handlers.go          # handler funcs per signal endpoint
-│   │   └── middleware.go        # auth placeholder, request logging
-│   ├── intake/
-│   │   ├── metrics/
-│   │   │   ├── parser.go        # JSON → internal MetricBatch type
-│   │   │   └── validator.go     # field presence + type checks
-│   │   ├── logs/
-│   │   │   ├── parser.go
-│   │   │   └── validator.go
-│   │   └── traces/
-│   │       ├── parser.go
-│   │       └── validator.go
-│   ├── identity/
-│   │   └── normalizer.go        # resource attribute normalization
-│   ├── pipeline/
-│   │   └── pipeline.go          # parse → normalize → validate → forward
-│   └── forwarder/
-│       └── storage_client.go    # interface + HTTP impl for storage write API
-├── pkg/
-│   └── schema/
-│       ├── resource.go          # ResourceAttrs type (shared with storage agent)
-│       ├── metric.go            # MetricPoint, MetricBatch types
-│       ├── log.go               # LogRecord, LogBatch types
-│       └── span.go              # Span, TraceBatch types
-└── config/
-    └── config.go                # env-based config (port, storage URL, etc.)
+### 5.2 Write Architecture
+
+Ingestion writes directly to ClickHouse using the ClickHouse HTTP interface with `FORMAT JSONEachRow`. There is no intermediate storage write API service.
+
+```text
+SDK -> Ingestion Gateway -> ClickHouse HTTP (INSERT ... FORMAT JSONEachRow)
 ```
 
-**Notes:**
-- `pkg/schema` types are the proposed contract to share with the storage agent. These should be reviewed and locked before implementation begins.
-- `forwarder/storage_client.go` defines an interface — the concrete implementation depends on what write API the storage agent exposes.
+ClickHouse connection config:
 
----
-
-## 9. Validation Behavior
-
-| Condition | HTTP Response |
+| Variable | Description |
 |---|---|
-| Valid payload | `202 Accepted` — payload accepted for forwarding |
-| Missing `service.name` | `400 Bad Request` with error detail |
-| Unknown/invalid `type` for metrics | `400 Bad Request` |
-| Invalid timestamp (negative, non-numeric) | `400 Bad Request` |
-| Empty `metrics`/`logs`/`spans` array | `400 Bad Request` |
-| Storage forwarder unavailable | `503 Service Unavailable` (fail-open option: buffer + `202`) |
-| Malformed JSON | `400 Bad Request` |
+| `CLICKHOUSE_HOST` | Hostname of ClickHouse instance |
+| `CLICKHOUSE_PORT` | HTTP port, default `8123` |
+| `CLICKHOUSE_DATABASE` | Database name |
+| `CLICKHOUSE_USER` | Username |
+| `CLICKHOUSE_PASSWORD` | Password |
 
-The ingestion layer does **not** drop data silently. All errors are returned to the caller.
+Batch write rules:
 
----
+- Ingestion buffers and flushes to ClickHouse in batches of 1000 rows or every 500ms, whichever comes first.
+- Individual row inserts are not used.
+- `trace_index` is populated by a ClickHouse materialized view on the `spans` table.
+- Ingestion has no responsibility for `trace_index`.
 
-## 10. Transport Expectations (Client SDK / Agent)
+### 5.3 Metric Event Schema
 
-The platform expects instrumentation agents or SDKs running alongside the target service to:
+#### Gauge and Counter
 
-1. Batch telemetry before sending (reduce request volume).
-2. Send on a configurable flush interval (default: 10s for metrics, 5s for traces/logs).
-3. Retry on `503` with exponential backoff.
-4. Populate `trace_id` and `span_id` in log records when a trace context is active.
-5. Use UTC Unix milliseconds for all timestamps.
+One row per data point.
 
-For the initial Node.js target, the expectation is an OpenTelemetry Node.js SDK configured with a custom OTLP-HTTP exporter pointing at this ingestion gateway.
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `service_name` | string | yes | From 5.1 |
+| `environment` | string | yes | From 5.1 |
+| `host` | string | yes | `""` if absent |
+| `version` | string | yes | `""` if absent |
+| `timestamp` | int64 | yes | Unix nanoseconds |
+| `name` | string | yes | Dot-namespaced |
+| `type` | string | yes | `"gauge"` or `"counter"` |
+| `unit` | string | no | `""` if absent |
+| `value` | float64 | yes | Counter values must be `>= 0` |
+| `tags` | object | yes | `Map<string,string>`, `{}` if no tags |
 
----
+Tag constraints:
 
-## 11. Open Questions for Storage Agent
+- Max 20 key-value pairs.
+- Keys match `[a-z_][a-z0-9_.]*`.
+- Keys max 64 chars.
+- Values max 256 chars.
+- Ingestion rejects metrics with malformed tag keys.
 
-These must be resolved before the Storage Forwarder can be implemented.
+#### Histogram
 
-| # | Question | Impact |
+The SDK may send a histogram object to the ingestion gateway. Ingestion explodes it into multiple rows before writing to ClickHouse. `summary` type is not supported in Phase 2.
+
+SDK histogram payload handled by ingestion:
+
+```json
+{
+  "name": "http.request.duration",
+  "type": "histogram",
+  "unit": "ms",
+  "buckets": [
+    { "upper_bound": 50, "count": 10 },
+    { "upper_bound": 100, "count": 25 },
+    { "upper_bound": 250, "count": 45 },
+    { "upper_bound": 500, "count": 47 }
+  ],
+  "count": 47,
+  "sum": 4230.5
+}
+```
+
+Rows written by ingestion:
+
+| Row | `name` | `type` | `value` | `tags` |
+|---|---|---|---|---|
+| Bucket `<= 50` | `http.request.duration` | `histogram` | `10` | merged event tags plus `"le": "50"` |
+| Bucket `<= 100` | `http.request.duration` | `histogram` | `25` | merged event tags plus `"le": "100"` |
+| Bucket `<= 250` | `http.request.duration` | `histogram` | `45` | merged event tags plus `"le": "250"` |
+| Bucket `<= 500` | `http.request.duration` | `histogram` | `47` | merged event tags plus `"le": "500"` |
+| Count | `http.request.duration_count` | `counter` | `47` | merged event tags only |
+| Sum | `http.request.duration_sum` | `counter` | `4230.5` | merged event tags only |
+
+Rules:
+
+- All histogram rows share the same `service_name`, `environment`, `host`, `version`, `timestamp`, and `unit` as the parent event.
+- The `le` tag value is the string representation of `upper_bound`.
+- There is no `+Inf` row.
+- The count row replaces `+Inf`.
+
+### 5.4 Log Event Schema
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `log_id` | string | yes | ULID generated by ingestion |
+| `service_name` | string | yes | From 5.1 |
+| `environment` | string | yes | From 5.1 |
+| `host` | string | yes | `""` if absent |
+| `version` | string | yes | `""` if absent |
+| `timestamp` | int64 | yes | Unix nanoseconds |
+| `severity_number` | int32 | yes | `0` if unknown |
+| `severity_text` | string | yes | Uppercased original string, `""` if absent |
+| `message` | string | yes | Max 65536 bytes |
+| `trace_id` | string | no | 32 lowercase hex chars, `""` if absent |
+| `span_id` | string | no | 16 lowercase hex chars, `""` if absent |
+| `attributes` | object | yes | `Map<string,string>`, `{}` if no attributes, max 50 pairs |
+
+Rules:
+
+- Ingestion generates one ULID per log record before forwarding.
+- `message` is truncated with `[truncated]` suffix if it exceeds 65536 bytes.
+- `trace_id` and `span_id` must be valid hex strings when present.
+- Missing `trace_id` or `span_id` is stored as `""`.
+- Attribute values are stored as strings. Ingestion converts non-string values to string representation before forwarding.
+
+Severity mapping:
+
+| Incoming string (case-insensitive) | `severity_number` | `severity_text` |
 |---|---|---|
-| S1 | What write API does storage expose? (HTTP REST, gRPC, direct DB?) | Determines `forwarder/storage_client.go` implementation |
-| S2 | What is the expected write payload format — does storage accept our internal schema types directly, or does it define its own? | May require a translation layer in the forwarder |
-| S3 | Does storage expect metrics, logs, and traces on separate endpoints, or a single intake? | Affects routing in the forwarder |
-| S4 | What backpressure / flow-control mechanism does storage support? | Determines retry/buffer strategy in the forwarder |
-| S5 | For histograms and summaries: what bucket format does storage want? | Needed to finalize `metric.go` schema type |
-| S6 | Does storage need retention hints at write time (e.g., TTL tags per signal)? | If yes, ingestion must support passing them through from config |
-| S7 | How should ingestion handle storage unavailability — drop, buffer in memory, or buffer to disk? | Operational reliability decision |
+| `TRACE`, `trace`, `TRC` | `1` | `TRACE` |
+| `DEBUG`, `debug`, `DBG` | `5` | `DEBUG` |
+| `INFO`, `info`, `INFORMATION` | `9` | `INFO` |
+| `WARN`, `warn`, `WARNING` | `13` | `WARN` |
+| `ERROR`, `error`, `ERR` | `17` | `ERROR` |
+| `FATAL`, `fatal`, `CRITICAL`, `CRIT` | `21` | `FATAL` |
+| anything else | `0` | original string, uppercased |
+
+### 5.5 Trace Span Schema
+
+One row per span. Ingestion accepts individual spans, not assembled traces.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `service_name` | string | yes | From 5.1 |
+| `environment` | string | yes | From 5.1 |
+| `host` | string | yes | `""` if absent |
+| `version` | string | yes | `""` if absent |
+| `trace_id` | string | yes | 32 lowercase hex chars |
+| `span_id` | string | yes | 16 lowercase hex chars |
+| `parent_span_id` | string | yes | 16 lowercase hex chars, `""` for root span |
+| `name` | string | yes | Operation name |
+| `kind` | string | yes | `"internal"`, `"server"`, `"client"`, `"producer"`, or `"consumer"` |
+| `start_time` | int64 | yes | Unix nanoseconds |
+| `end_time` | int64 | yes | Unix nanoseconds, must be `>= start_time` |
+| `duration_ns` | int64 | yes | Computed by ingestion |
+| `status` | string | yes | `"ok"`, `"error"`, or `"unset"` |
+| `status_message` | string | yes | `""` if absent |
+| `attributes` | object | yes | `Map<string,string>`, `{}` if no attributes, max 128 pairs |
+
+Rules:
+
+- Ingestion computes `duration_ns = end_time - start_time`.
+- If the SDK sends `duration_ms`, ingestion converts `duration_ns = duration_ms * 1_000_000`.
+- `duration_ms` is not forwarded to storage.
+- `parent_span_id == ""` identifies a root span.
+- Ingestion rejects spans where `end_time < start_time`.
+- Validation failures are partial-batch rejections for the affected span.
+
+Status mapping:
+
+- `STATUS_CODE_OK` -> `ok`
+- `STATUS_CODE_ERROR` -> `error`
+- `STATUS_CODE_UNSET` or absent -> `unset`
+
+### 5.6 Ingestion External API
+
+Base path: `/v1`  
+Auth: `X-Api-Key: <key>` on all requests. Missing or invalid key returns `401`.  
+Config: one deployment-wide API key via `INGESTION_API_KEY`  
+Content-Type: `application/json`
+
+Endpoints:
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `POST` | `/v1/metrics` | `{ "metrics": [MetricEvent, ...] }` | `202` |
+| `POST` | `/v1/logs` | `{ "logs": [LogEvent, ...] }` | `202` |
+| `POST` | `/v1/traces` | `{ "spans": [SpanEvent, ...] }` | `202` |
+
+Acknowledgment semantics:
+
+- `202` means the payload has been received and accepted for forwarding.
+- `202` does not mean the data has already been written to ClickHouse.
+- If ClickHouse is unavailable, ingestion buffers in memory up to 10,000 rows, drops oldest on overflow, and continues attempting to flush.
+- Callers must implement retry with exponential backoff on `503`.
+
+Partial batch behavior:
+
+- Valid events in a request are processed even if some events are rejected.
+- The response body describes which events were rejected.
+
+Success response body:
+
+```json
+{ "accepted": 9, "rejected": 1 }
+```
+
+Validation error response body:
+
+```json
+{
+  "accepted": 8,
+  "rejected": 2,
+  "errors": [
+    { "index": 2, "field": "service_name", "reason": "required field is empty" },
+    { "index": 7, "field": "end_time", "reason": "end_time < start_time" }
+  ]
+}
+```
+
+`index` is the zero-based position of the event in the submitted array.
+
+Timestamp conversion responsibility:
+
+- The ingestion gateway converts SDK-submitted millisecond timestamps to nanoseconds before forwarding to ClickHouse.
+- The ingestion-to-storage boundary always uses nanoseconds.
 
 ---
 
-## 12. Open Questions for Frontend Agent
+## 6. Validation
 
-| # | Question | Impact |
-|---|---|---|
-| F1 | What time-series resolution is needed for metrics display (raw points vs. pre-aggregated rollups)? | Informs whether ingestion should pre-aggregate or store raw |
-| F2 | Does the service map view require ingestion to extract and store service-dependency edges from trace spans (caller → callee)? | If yes, the trace parser needs to emit a derived dependency event |
-| F3 | What log search fields need to be indexed (severity, service, trace_id, body substring)? | Guides which `attributes` keys ingestion should surface/normalize |
-| F4 | Does the UI need a live-tail / streaming log view? | Would require ingestion to support a pub/sub or SSE mechanism, not just batch write |
-| F5 | What is the expected correlation UX — e.g., "show logs for this trace span"? | Confirms that `trace_id` + `span_id` on log records is sufficient or if more linking is needed |
+- [ ] Confirm every ingestion field name, type, and rejection rule matches `INTERFACES.md`.
+- [ ] Confirm the document does not reintroduce a storage write API, nested identity fields at the storage boundary, unsupported `summary` metrics, or ingestion-owned `trace_index` behavior.
+- [ ] Confirm the external API section matches the `/v1` routes, auth header, partial-batch semantics, and response bodies in `INTERFACES.md`.
 
 ---
 
-## 13. Validation Steps
+## 7. Open Issues
 
-- [ ] Storage agent reviews and confirms or proposes changes to `pkg/schema` types (S1–S7 above).
-- [ ] Frontend agent reviews open questions F1–F5.
-- [ ] Reviewer agent reviews payload shapes and component boundaries for integration risks.
-- [ ] Once storage write API contract is agreed, implement `forwarder/storage_client.go` interface.
-- [ ] Implement parsers and validators with unit tests covering required-field enforcement and malformed input.
-- [ ] End-to-end test: Node.js app with OTel SDK → ingestion gateway → storage write confirmed.
-
----
-
-## 14. Open Issues
-
-- **Histogram/summary value format** (S5): Not fully specified. Proposing storage agent drives this decision since they own the query model.
-- **Auth placeholder**: Gateway middleware has a stub. Real auth (API keys or mTLS) is Phase 5 work but the stub must not block unauthenticated requests in Phase 2.
-- **Single gateway vs. multi-service**: Design defaults to single gateway. If metrics volume significantly outpaces logs/traces, splitting into separate services is straightforward given the internal component boundaries.
-- **OTLP/gRPC support**: Currently HTTP JSON only. gRPC transport (standard OTLP) should be added in Phase 3 to support broader SDK compatibility.
+- None in the ingestion design doc after alignment to `INTERFACES.md` and the ingestion findings in `docs/review-alignment.md`.
