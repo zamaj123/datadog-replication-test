@@ -105,8 +105,59 @@ Prospective review based on standard observability platform patterns. Superseded
 
 ## Pending Work
 
-- All agents must review `docs/review-integration.md` and resolve conflicts before implementation
-- `INTERFACES.md` must be created (storage agent proposed as owner for §6; all agents for §1)
-- 18 decisions in §4 must be formally resolved and recorded
-- Review implementation PRs against INTERFACES.md once agreed contracts exist
-- Flag any PR that implements against an OPEN or unresolved section
+- Subsystem owners must update `docs/ingestion-design.md`, `docs/storage-design.md`, `docs/frontend-design.md`, and `docs/alerts-design.md` to match `INTERFACES.md` and clear the findings in `docs/review-alignment.md`.
+- Review implementation PRs against `INTERFACES.md` and the alignment findings before feature code lands.
+- Flag any PR that implements against stale subsystem design text instead of the canonical contract.
+
+---
+
+## Completed Work
+
+### Phase 2b — Contract conformance review against `INTERFACES.md` (2026-04-02)
+
+**Output:** `docs/review-alignment.md`
+
+**Summary of findings:**
+
+- `INTERFACES.md` now resolves the earlier cross-subsystem conflicts, but the subsystem design docs are not yet aligned to it.
+- Remaining violations were found in all four subsystem docs:
+  - Ingestion still documents resource-block identity, millisecond timestamps, unresolved write-API architecture, and pre-contract signal schemas.
+  - Storage still documents non-canonical schema/query field names, superseded endpoints, incorrect `trace_index` ownership, and missing required query endpoints.
+  - Frontend still targets `from`/`to`, old endpoint paths, old response keys, and keeps resolved contract items as open questions.
+  - Alerts still defines a divergent monitor/state model, a custom query contract, old telemetry field names, and non-canonical alerts endpoint paths.
+- No further contract redesign was proposed. The remaining work is to update subsystem docs so they faithfully reflect `INTERFACES.md`.
+
+### Phase 2c — Unified implementation replacement proposal (2026-04-02)
+
+**Output:** `docs/review-node-typescript-architecture.md`
+
+**Summary of findings:**
+
+- Current integration status is stable at the contract layer but still fragmented at the implementation-design layer.
+- Ingestion, storage, and frontend still describe different implementation directions and should not be used as-is for execution planning.
+- Proposed a single reviewer-owned replacement architecture using:
+  - Node.js 22 + TypeScript across ingestion, query-api, and web
+  - Fastify for ingestion and query services
+  - React + Vite for the frontend
+  - shared Zod-backed contract types
+  - direct ClickHouse writes from ingestion
+  - a dedicated Node.js query API over ClickHouse and PostgreSQL
+- The proposal is intended to replace the implementation ideas in the ingestion, storage, and frontend docs without changing `INTERFACES.md`.
+
+### Phase 2d — Subsystem implementation docs replaced with aligned Node/TypeScript guidance (2026-04-02)
+
+**Outputs:**
+
+- `docs/ingestion-design.md`
+- `docs/storage-design.md`
+- `docs/frontend-design.md`
+
+**Summary of findings:**
+
+- Replaced the stale implementation sections in the ingestion, storage, and frontend docs rather than deleting the files outright.
+- Preserved those subsystem files as the entry points for their areas, but rewrote them so they now match the reviewer architecture and `INTERFACES.md`.
+- Removed the prior incorrect implementation assumptions, including:
+  - storage write API between ingestion and storage
+  - Go-style ingestion module layout
+  - non-canonical query paths and params
+  - stale frontend aliases such as `from` / `to`, `env`, `service`, and `level`
