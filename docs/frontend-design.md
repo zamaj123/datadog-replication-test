@@ -19,7 +19,7 @@ This document covers:
 - log and trace exploration
 - exact API usage expectations for each page
 
-This document does not define backend schemas or new response formats. When this document and older subsystem drafts differ, `INTERFACES.md` is authoritative.
+This document is a frontend projection of `INTERFACES.md`. It does not redefine backend schemas, add contract fields, or introduce alternate endpoint shapes. When this document and `INTERFACES.md` differ, `INTERFACES.md` is authoritative.
 
 ---
 
@@ -40,7 +40,7 @@ The application is a single-page app with a persistent shell.
 /alerts                    → alerts list (Phase 4)
 ```
 
-Custom dashboards are out of scope for the current contract. The frontend does not depend on dashboard persistence endpoints in Phase 3.
+Only the routes and data dependencies documented below are in scope for the current contract.
 
 ### 2.2 App Shell
 
@@ -49,7 +49,7 @@ App Shell
 ├── Global Header
 │   ├── environment selector
 │   ├── time range selector
-│   └── global search entry point
+│   └── page title / route context
 ├── Left Sidebar
 │   ├── Overview
 │   ├── Services
@@ -68,7 +68,7 @@ The following state is shared across pages:
 |---|---|---|
 | `environment` | `string \| ""` | Selected environment. `""` means unscoped where allowed by the API. |
 | `timeRange` | `{ start: string, end: string }` | Required ISO 8601 values. Query semantics are `[start, end)`. |
-| `service_name` | `string \| ""` | Optional convenience scope carried into logs/traces from service pages. |
+| `service_name` | `string \| ""` | Optional page-to-page scope carried into logs/traces from service pages. |
 
 Frontend must use canonical parameter names from `INTERFACES.md`: `start`, `end`, `environment`, and `service_name`.
 
@@ -86,7 +86,7 @@ Frontend must use canonical parameter names from `INTERFACES.md`: `start`, `end`
 
 ### 3.1 Overview Dashboard (`/dashboard/overview`)
 
-The overview page is a fixed dashboard built from existing query endpoints. It is not user-editable in Phase 3.
+The overview page is a fixed dashboard built from existing query endpoints.
 
 **Layout**
 
@@ -102,8 +102,8 @@ Row 3: [Services table]
 |---|---|---|
 | Active services | `GET /api/v1/services` | Count rows in `services[]`. |
 | Request rate | `GET /api/v1/services` | Sum `request_rate_per_sec` across visible services. |
-| Error rate | `GET /api/v1/services` | Weighted display from service summaries or simple aggregate display note. |
-| P99 latency | `GET /api/v1/services` | Highest or aggregate visible `p99_latency_ns`, converted client-side for display. |
+| Error rate | `GET /api/v1/services` | Derived from `error_rate` values returned in `services[]`. |
+| P99 latency | `GET /api/v1/services` | Derived from `p99_latency_ns`, converted client-side for display. |
 | Log volume chart | `GET /api/v1/logs/volume` | Uses `by_severity` buckets. |
 | Services table | `GET /api/v1/services` | Canonical source for service list page and dashboard table. |
 
@@ -136,7 +136,7 @@ Displays all services active in the selected time range.
 **Behavior**
 
 - Clicking a row navigates to `/services/:service_name`.
-- Sorting is client-side unless a later contract adds server sorting.
+- Sorting behavior is frontend-owned and does not require additional API fields.
 - Numeric latency display converts nanoseconds to ms.
 - Error rate display converts fraction to percent.
 
@@ -165,6 +165,8 @@ Shows:
 - recent logs preview from `GET /api/v1/logs`
 - recent traces preview from `GET /api/v1/traces`
 
+Preview requests must still use canonical query parameters: `start`, `end`, `environment`, `service_name`, and endpoint-specific `limit`.
+
 #### Metrics
 
 Shows:
@@ -182,11 +184,11 @@ Frontend query rules:
 
 #### Logs
 
-Embedded log explorer scoped with `service_name`.
+Embedded log explorer scoped with `service_name` and the shared `start`/`end`/`environment` range.
 
 #### Traces
 
-Embedded trace list scoped with `service_name`.
+Embedded trace list scoped with `service_name` and the shared `start`/`end`/`environment` range.
 
 ---
 
@@ -242,6 +244,7 @@ Expanded row content may show:
 - If the UI needs a pure count, it uses `count_only=true` on `GET /api/v1/logs`.
 - `total_matched` is an estimate and should be labeled accordingly.
 - `truncated` should surface as a non-blocking warning because it indicates capped results.
+- The UI must not assume offset pagination or stable page numbers.
 
 ### 5.5 Severity Display
 
@@ -325,6 +328,7 @@ Frontend tree-building rules:
 - root span uses `parent_span_id: null` in the trace-detail response
 - error highlighting keys off `status == "error"`
 - duration and offsets are computed from ISO timestamps and `duration_ns`
+- the request to `GET /api/v1/traces/:trace_id` takes no query parameters
 
 ---
 
@@ -343,7 +347,7 @@ Frontend tree-building rules:
 | `GET /api/v1/logs/volume` | overview log volume, log explorer histogram |
 | `GET /api/v1/traces` | trace explorer, service trace preview |
 | `GET /api/v1/traces/:trace_id` | trace detail page |
-| `GET /api/v1/alerts/monitors` | alerts page, service alert count context in Phase 4 |
+| `GET /api/v1/alerts/monitors` | alerts page in Phase 4 |
 
 ### 7.2 Required Parameter Conventions
 
@@ -352,6 +356,7 @@ Frontend tree-building rules:
 - Environment filter param is always `environment`.
 - Pagination uses `cursor` in the request and `next_cursor` in the response.
 - All timestamps in responses are ISO 8601 strings.
+- Query API auth uses `X-Api-Key: <key>` as defined in `INTERFACES.md`.
 
 ### 7.3 Canonical Response Fields Used in the UI
 
@@ -375,6 +380,11 @@ Frontend-owned display models must preserve these canonical field names at the A
 - `p50_latency_ns`
 - `p95_latency_ns`
 - `p99_latency_ns`
+- `last_seen`
+- `log_count`
+- `active_alert_count`
+- `root_name`
+- `span_count`
 - `series`
 - `labels`
 - `points`
@@ -391,7 +401,7 @@ If the UI wants alternate labels such as "P99 latency (ms)" or "Severity", that 
 - Do not assume uppercase trace status values in requests or responses.
 - Do not assume `parent_span_id == ""` on trace detail responses; the contract uses `null` there.
 - Do not assume log rows can be keyed by timestamp alone; use `log_id`.
-- Do not invent dashboards, service, or trace response fields beyond those listed in `INTERFACES.md`.
+- Do not invent dashboard, service, log, trace, metric, or alert response fields beyond those listed in `INTERFACES.md`.
 - Treat `truncated` as meaningful response metadata and surface it in the UI.
 
 ---

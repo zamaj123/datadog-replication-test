@@ -11,6 +11,7 @@ Design and implement the observability UI.
 - [x] Trace exploration concept — `docs/frontend-design.md` §6
 - [x] API requirements for frontend — `docs/frontend-design.md` §7–8
 - [x] Contract alignment to `INTERFACES.md` — `docs/frontend-design.md`
+- [x] Implementation scaffold plan — `docs/frontend-implementation-plan.md`
 
 ## Boundaries
 Allowed: frontend app, UI components, page flows, client-side state
@@ -30,4 +31,4 @@ Must depend on documented query APIs and shared field names.
 8. Service summaries come from `GET /api/v1/services` and `GET /api/v1/services/:service_name/summary`
 
 ## Status
-Phase 1 design updated to conform to the finalized cross-subsystem contract. Ready for Phase 3 frontend implementation when application code is introduced.
+Phase 1 design updated to conform to the finalized cross-subsystem contract. Initial frontend scaffold plan documented in `docs/frontend-implementation-plan.md`.
