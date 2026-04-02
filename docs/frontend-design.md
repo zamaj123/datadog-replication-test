@@ -1,26 +1,25 @@
 # Frontend Design
 
-**Agent:** Frontend  
-**Stage:** Phase 1 — Shared Parallel Design  
-**Date:** 2026-04-02  
-**Status:** Draft — pending cross-agent API contract review
+**Agent:** Frontend
+**Stage:** Phase 1 design aligned to cross-subsystem contract
+**Date:** 2026-04-02
+**Status:** Contract-aligned with `INTERFACES.md`
 
 ---
 
 ## 1. Objective
 
-Define the complete frontend information architecture for the observability platform. This document covers:
+Define the frontend information architecture and page behavior for the observability platform using only the query and alert contracts finalized in `INTERFACES.md`.
 
-- Page hierarchy and navigation
-- Global UX primitives
-- Dashboard structure and widget types
-- Service detail view
-- Log Explorer
-- Trace Explorer
-- Exact backend API requirements (endpoints, parameters, response shapes)
-- Shared identity field contracts
+This document covers:
 
-This document does not define backend implementation. It defines what the frontend requires from the backend.
+- navigation and page hierarchy
+- global filters and shared client state
+- overview and service pages
+- log and trace exploration
+- exact API usage expectations for each page
+
+This document is a frontend projection of `INTERFACES.md`. It does not redefine backend schemas, add contract fields, or introduce alternate endpoint shapes. When this document and `INTERFACES.md` differ, `INTERFACES.md` is authoritative.
 
 ---
 
@@ -28,49 +27,58 @@ This document does not define backend implementation. It defines what the fronte
 
 ### 2.1 Top-Level Navigation
 
-The application is a single-page app with a persistent left sidebar. Top-level sections:
+The application is a single-page app with a persistent shell.
 
 ```
 /                          → redirect to /dashboard/overview
-/dashboard/overview        → Platform Overview Dashboard
-/dashboard/:id             → Custom / named dashboard
-/services                  → Services list
-/services/:service         → Service Detail (tabs: Overview, Metrics, Logs, Traces)
-/logs                      → Log Explorer
-/traces                    → Trace Explorer
-/traces/:trace_id          → Trace Detail (full waterfall)
-/alerts                    → Alert rules (deferred — Phase 4)
+/dashboard/overview        → platform overview dashboard
+/services                  → services list
+/services/:service_name    → service detail
+/logs                      → log explorer
+/traces                    → trace explorer
+/traces/:trace_id          → trace detail
+/alerts                    → alerts list (Phase 4)
 ```
 
-### 2.2 Page Hierarchy
+Only the routes and data dependencies documented below are in scope for the current contract.
+
+### 2.2 App Shell
 
 ```
 App Shell
 ├── Global Header
-│   ├── Environment selector (env filter, global scope)
-│   ├── Time range selector (global, affects all data queries)
-│   └── Search bar (global — routes to logs or traces depending on input)
+│   ├── environment selector
+│   ├── time range selector
+│   └── page title / route context
 ├── Left Sidebar
-│   ├── Overview Dashboard
+│   ├── Overview
 │   ├── Services
-│   ├── Log Explorer
-│   ├── Trace Explorer
-│   └── Alerts (deferred)
-└── Main Content Area
-    └── (page-specific content)
+│   ├── Logs
+│   ├── Traces
+│   └── Alerts
+└── Main Content
+    └── active route
 ```
 
 ### 2.3 Global State
 
-The following are globally scoped and persist across navigation:
+The following state is shared across pages:
 
-| State key       | Type            | Description                                  |
-|-----------------|-----------------|----------------------------------------------|
-| `env`           | string          | Active environment filter (e.g. `production`) |
-| `timeRange`     | `{ from, to }`  | Active time window, ISO 8601 strings         |
-| `selectedService` | string \| null | Active service filter (optional, global)    |
+| State key | Type | Notes |
+|---|---|---|
+| `environment` | `string \| ""` | Selected environment. `""` means unscoped where allowed by the API. |
+| `timeRange` | `{ start: string, end: string }` | Required ISO 8601 values. Query semantics are `[start, end)`. |
+| `service_name` | `string \| ""` | Optional page-to-page scope carried into logs/traces from service pages. |
 
-Time range shortcuts: Last 15m, 30m, 1h, 3h, 6h, 12h, 24h, 7d, custom.
+Frontend must use canonical parameter names from `INTERFACES.md`: `start`, `end`, `environment`, and `service_name`.
+
+### 2.4 Shared UX Rules
+
+- The environment selector is populated from `GET /api/v1/environments`.
+- Time shortcuts must stay within retention windows defined in `INTERFACES.md` §9.
+- Empty-state messaging must distinguish between "no data in range" and request failure.
+- Paginated views use cursor-based pagination only. Offset/page-number pagination is not supported.
+- Trace and monitor status values are lowercase in transport and mapped to visual badges in the UI.
 
 ---
 
@@ -78,494 +86,336 @@ Time range shortcuts: Last 15m, 30m, 1h, 3h, 6h, 12h, 24h, 7d, custom.
 
 ### 3.1 Overview Dashboard (`/dashboard/overview`)
 
-A fixed system dashboard. Not user-editable in Phase 3. Provides a platform-wide health summary.
+The overview page is a fixed dashboard built from existing query endpoints.
 
-**Layout (grid, 12 columns):**
+**Layout**
 
 ```
-Row 1: [Services Health (4)] [Request Rate — all services (4)] [Error Rate — all services (4)]
-Row 2: [P99 Latency — all services (6)]  [Throughput — all services (6)]
-Row 3: [Log Volume by Level (6)]  [Active Traces (span count over time) (6)]
-Row 4: [Services Table — sortable by error rate, latency, req rate (12)]
+Row 1: [Active services] [Request rate] [Error rate]
+Row 2: [P99 latency] [Log volume]
+Row 3: [Services table]
 ```
 
-**Widget types required for Phase 3:**
+**Cards and data sources**
 
-| Widget type         | Description                                     |
-|---------------------|-------------------------------------------------|
-| `timeseries`        | Line chart over time range, one or more series  |
-| `stat`              | Single numeric value with optional trend arrow  |
-| `services_table`    | Tabular list of services with key metrics       |
-| `log_volume_bar`    | Bar chart of log counts grouped by level        |
+| Widget | Source | Notes |
+|---|---|---|
+| Active services | `GET /api/v1/services` | Count rows in `services[]`. |
+| Request rate | `GET /api/v1/services` | Sum `request_rate_per_sec` across visible services. |
+| Error rate | `GET /api/v1/services` | Derived from `error_rate` values returned in `services[]`. |
+| P99 latency | `GET /api/v1/services` | Derived from `p99_latency_ns`, converted client-side for display. |
+| Log volume chart | `GET /api/v1/logs/volume` | Uses `by_severity` buckets. |
+| Services table | `GET /api/v1/services` | Canonical source for service list page and dashboard table. |
 
-### 3.2 Custom Dashboards (`/dashboard/:id`)
-
-Deferred to Phase 3 advanced scope. The backend must support named dashboard persistence. Frontend will need `GET/POST/PUT /api/v1/dashboards` once that work begins. Not designed in detail here.
+The frontend must not assume a bespoke dashboard summary endpoint beyond the documented services and log-volume APIs.
 
 ---
 
-## 4. Service Detail View (`/services/:service`)
+## 4. Services
 
-### 4.1 Service List Page (`/services`)
+### 4.1 Services List (`/services`)
 
-A table of all services observed within the current `env` and `timeRange`.
+Displays all services active in the selected time range.
 
-**Columns:** Service name | Environment | Last seen | Request rate (req/s) | Error rate (%) | P99 latency (ms) | Log count
+**Columns**
 
-**Interactions:**
-- Click row → navigate to `/services/:service`
-- Sort by any column
-- Filter by env (uses global env selector)
+| Column | Response field |
+|---|---|
+| Service | `service_name` |
+| Environment | `environment` |
+| Last seen | `last_seen` |
+| Request rate | `request_rate_per_sec` |
+| Error rate | `error_rate` |
+| P99 latency | `p99_latency_ns` |
+| Log count | `log_count` |
 
-### 4.2 Service Detail Page (`/services/:service`)
+**Source**
 
-Header: service name, environment badge, last-seen timestamp.
+`GET /api/v1/services?start=...&end=...&environment=...`
 
-**Tabs:**
+**Behavior**
 
-#### Tab: Overview
-- Stat row: Req/s, Error %, P99 latency, P50 latency
-- Time series: Request rate + error rate overlaid
-- Time series: Latency (P50, P95, P99)
-- Recent log entries (last 20, link to Log Explorer filtered to this service)
-- Recent traces (last 10, link to Trace Explorer filtered to this service)
+- Clicking a row navigates to `/services/:service_name`.
+- Sorting behavior is frontend-owned and does not require additional API fields.
+- Numeric latency display converts nanoseconds to ms.
+- Error rate display converts fraction to percent.
 
-#### Tab: Metrics
-- Filterable list of metric names for this service
-- Select metric → renders full time-series chart
-- Supports multiple metrics overlaid on one chart
+### 4.2 Service Detail (`/services/:service_name`)
 
-#### Tab: Logs
-- Embedded log view scoped to this service (same UI as Log Explorer, pre-filtered)
-- Time range inherits global selector
+The service detail header and summary cards come from the service summary endpoint.
 
-#### Tab: Traces
-- Embedded trace list scoped to this service (same UI as Trace Explorer, pre-filtered)
-- Time range inherits global selector
+**Header data**
+
+- `service_name`
+- `environment`
+- `last_seen`
+- `active_alert_count`
+
+**Primary source**
+
+`GET /api/v1/services/:service_name/summary?start=...&end=...&environment=...`
+
+### 4.3 Service Detail Tabs
+
+#### Overview
+
+Shows:
+
+- stats: `request_rate_per_sec`, `error_rate`, `p50_latency_ns`, `p95_latency_ns`, `p99_latency_ns`, `log_count`, `active_alert_count`
+- recent logs preview from `GET /api/v1/logs`
+- recent traces preview from `GET /api/v1/traces`
+
+Preview requests must still use canonical query parameters: `start`, `end`, `environment`, `service_name`, and endpoint-specific `limit`.
+
+#### Metrics
+
+Shows:
+
+- metric picker from `GET /api/v1/metrics/names?service_name=...&environment=...`
+- one or more charts backed by `GET /api/v1/metrics/query`
+
+Frontend query rules:
+
+- use `name` for the selected metric
+- use `service_name` and `environment` as filters
+- use `agg` explicitly for percentile charts (`p50`, `p95`, `p99`) where needed
+- use `filter[<key>]` for exact tag filters
+- consume `series[].labels` and `series[].points[]`
+
+#### Logs
+
+Embedded log explorer scoped with `service_name` and the shared `start`/`end`/`environment` range.
+
+#### Traces
+
+Embedded trace list scoped with `service_name` and the shared `start`/`end`/`environment` range.
 
 ---
 
 ## 5. Log Explorer (`/logs`)
 
-### 5.1 Layout
+### 5.1 Data Sources
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ Filter panel (left, collapsible, ~280px)                             │
-│  - Service (multi-select)                                            │
-│  - Level (DEBUG, INFO, WARN, ERROR — checkbox)                       │
-│  - Host (multi-select)                                               │
-│  - Free text search (message field)                                  │
-│  - Key/value attribute filters (add arbitrary key=value pairs)       │
-│                                                                      │
-│ Results area (right)                                                 │
-│  - Log volume histogram (bar chart over time — click to zoom)        │
-│  - Log table (timestamp, level, service, host, message — truncated)  │
-│    - Click row → slide-in drawer (full log detail)                   │
-└──────────────────────────────────────────────────────────────────────┘
-```
+| UI area | Endpoint |
+|---|---|
+| Results table | `GET /api/v1/logs` |
+| Volume histogram | `GET /api/v1/logs/volume` |
 
-### 5.2 Log Table Columns
+### 5.2 Supported Filters
 
-| Column      | Field          | Notes                              |
-|-------------|----------------|------------------------------------|
-| Timestamp   | `timestamp`    | Formatted per user locale          |
-| Level       | `level`        | Colored badge (DEBUG/INFO/WARN/ERROR) |
-| Service     | `service`      | Clickable → service detail         |
-| Host        | `host`         |                                    |
-| Message     | `message`      | Truncated to ~120 chars            |
-| Trace ID    | `trace_id`     | If present — link to trace detail  |
+The frontend must expose only documented structured filters:
 
-### 5.3 Log Detail Drawer
+| UI filter | Query parameter |
+|---|---|
+| Time range | `start`, `end` |
+| Environment | `environment` |
+| Service | `service_name` |
+| Minimum severity | `severity_min` |
+| Message search | `search` |
+| Exact trace match | `trace_id` |
+| Page size | `limit` |
+| Pagination | `cursor` |
 
-Opens on row click. Shows:
-- All fields from the log entry
-- Full message (untruncated)
-- If `trace_id` present: button to "View Trace" → `/traces/:trace_id`
-- Structured attributes rendered as key/value table
-- "Filter to this service" / "Filter to this host" quick actions
+There is no free-form backend filter DSL in the contract.
 
-### 5.4 Pagination and Loading
+### 5.3 Table Columns
 
-- Default page size: 100 rows
-- Load-more pattern (not classic pagination) — append next 100 rows
-- Results sorted by `timestamp` descending by default
+| Column | Response field |
+|---|---|
+| Timestamp | `timestamp` |
+| Severity | `severity_text` |
+| Service | `service_name` |
+| Environment | `environment` |
+| Host | `host` |
+| Message | `message` |
+| Trace ID | `trace_id` |
+
+Expanded row content may show:
+
+- `log_id`
+- `span_id`
+- `attributes`
+- `severity_number`
+
+### 5.4 Pagination and Counts
+
+- Default result page size is driven by backend default or explicit `limit`.
+- Infinite scroll or load-more must use `next_cursor`.
+- If the UI needs a pure count, it uses `count_only=true` on `GET /api/v1/logs`.
+- `total_matched` is an estimate and should be labeled accordingly.
+- `truncated` should surface as a non-blocking warning because it indicates capped results.
+- The UI must not assume offset pagination or stable page numbers.
+
+### 5.5 Severity Display
+
+Transport values stay canonical:
+
+- `severity_number`: integer
+- `severity_text`: uppercase display string such as `INFO`, `WARN`, `ERROR`
+
+The UI may style badges by `severity_text`, but it must not rename the field to `level`.
 
 ---
 
 ## 6. Trace Explorer (`/traces`)
 
-### 6.1 Layout
+### 6.1 Data Sources
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ Filter panel (left, collapsible, ~280px)                             │
-│  - Service (root service of trace — multi-select)                    │
-│  - Status (OK / ERROR)                                               │
-│  - Min/max duration (ms)                                             │
-│  - Trace ID exact match                                              │
-│  - Attribute key/value filters                                       │
-│                                                                      │
-│ Results area (right)                                                 │
-│  - Latency scatter plot (x=time, y=duration, color=status)           │
-│  - Trace list table                                                  │
-│    - Click row → navigate to /traces/:trace_id                       │
-└──────────────────────────────────────────────────────────────────────┘
-```
+| UI area | Endpoint |
+|---|---|
+| Trace list | `GET /api/v1/traces` |
+| Trace detail waterfall | `GET /api/v1/traces/:trace_id` |
 
-### 6.2 Trace List Table Columns
+### 6.2 Supported Filters
 
-| Column        | Field            | Notes                                   |
-|---------------|------------------|-----------------------------------------|
-| Trace ID      | `trace_id`       | Truncated, clickable                    |
-| Root Service  | `root_service`   | Service that initiated the trace        |
-| Root Name     | `root_name`      | Operation/span name at root             |
-| Duration      | `duration_ms`    | Total trace duration                    |
-| Spans         | `span_count`     | Number of spans in trace                |
-| Status        | `status`         | OK / ERROR badge                        |
-| Timestamp     | `start_time`     | When trace started                      |
+| UI filter | Query parameter |
+|---|---|
+| Time range | `start`, `end` |
+| Environment | `environment` |
+| Root service | `service_name` |
+| Status | `status` |
+| Minimum duration | `min_duration_ms` |
+| Exact trace ID | `trace_id` |
+| Page size | `limit` |
+| Pagination | `cursor` |
 
-### 6.3 Trace Detail Page (`/traces/:trace_id`)
+`status` values are lowercase and limited to `ok` and `error` on the trace list endpoint.
 
-Full-page view. Layout:
+### 6.3 Trace List Columns
 
-```
-Header: Trace ID | Root service | Duration | Status | Start time
+| Column | Response field |
+|---|---|
+| Trace ID | `trace_id` |
+| Root service | `root_service_name` |
+| Root name | `root_name` |
+| Duration | `duration_ns` |
+| Spans | `span_count` |
+| Status | `status` |
+| Start time | `start_time` |
+| Environment | `environment` |
 
-Timeline (waterfall):
-  ┌─────────────────────────────────────────────────────┐
-  │ Span name           Service    Duration   [bar]      │
-  │   └─ child span     service2   12ms       [--bar]    │
-  │       └─ ...                                         │
-  └─────────────────────────────────────────────────────┘
+The frontend converts `duration_ns` to ms for display.
 
-Click span → Span Detail panel (right):
-  - span_id, parent_span_id, service, operation name
-  - start_time, end_time, duration_ms
-  - status, status_message
-  - attributes (key/value)
-  - Link to logs with matching trace_id
-```
+### 6.4 Trace Detail Page (`/traces/:trace_id`)
 
-**Waterfall rendering requirements:**
-- Spans positioned by `start_time` offset from trace start
-- Width proportional to `duration_ms`
-- Color-coded by `service` (consistent palette per service name)
-- ERROR spans highlighted in red
-- Collapsed by default beyond depth 3; expand on click
+Header fields:
+
+- `trace_id`
+- `root_service_name`
+- `root_name`
+- `start_time`
+- `duration_ns`
+- `status`
+- `environment`
+
+Waterfall row fields:
+
+- `span_id`
+- `parent_span_id`
+- `service_name`
+- `name`
+- `kind`
+- `start_time`
+- `end_time`
+- `duration_ns`
+- `status`
+- `status_message`
+- `attributes`
+
+Frontend tree-building rules:
+
+- spans are already returned in ascending `start_time`
+- root span uses `parent_span_id: null` in the trace-detail response
+- error highlighting keys off `status == "error"`
+- duration and offsets are computed from ISO timestamps and `duration_ns`
+- the request to `GET /api/v1/traces/:trace_id` takes no query parameters
 
 ---
 
-## 7. Backend API Requirements
+## 7. API Contract Usage Matrix
 
-These are the API endpoints the frontend requires. The backend/storage agent must implement these contracts. All paths are under `/api/v1`.
+### 7.1 Query Endpoints Consumed by Frontend
 
-### 7.1 Shared Conventions
+| Endpoint | Used by |
+|---|---|
+| `GET /api/v1/environments` | global environment selector |
+| `GET /api/v1/services` | overview dashboard, services list |
+| `GET /api/v1/services/:service_name/summary` | service detail header and stats |
+| `GET /api/v1/metrics/names` | service metrics picker |
+| `GET /api/v1/metrics/query` | overview/service metric charts |
+| `GET /api/v1/logs` | log explorer, service log preview |
+| `GET /api/v1/logs/volume` | overview log volume, log explorer histogram |
+| `GET /api/v1/traces` | trace explorer, service trace preview |
+| `GET /api/v1/traces/:trace_id` | trace detail page |
+| `GET /api/v1/alerts/monitors` | alerts page in Phase 4 |
 
-- All query endpoints accept `from` and `to` as ISO 8601 query params (required).
-- `env` is an optional filter on all endpoints.
-- All responses are JSON.
+### 7.2 Required Parameter Conventions
+
+- Time range params are always `start` and `end`.
+- Service filter param is always `service_name`.
+- Environment filter param is always `environment`.
+- Pagination uses `cursor` in the request and `next_cursor` in the response.
 - All timestamps in responses are ISO 8601 strings.
-- Errors: `{ "error": "<message>", "code": "<string>" }` with appropriate HTTP status.
+- Query API auth uses `X-Api-Key: <key>` as defined in `INTERFACES.md`.
 
-### 7.2 Services
+### 7.3 Canonical Response Fields Used in the UI
 
-#### `GET /api/v1/services`
+Frontend-owned display models must preserve these canonical field names at the API boundary:
 
-Returns the list of known services with summary metrics for the current time range.
+- `service_name`
+- `environment`
+- `host`
+- `timestamp`
+- `severity_number`
+- `severity_text`
+- `log_id`
+- `trace_id`
+- `span_id`
+- `parent_span_id`
+- `status`
+- `root_service_name`
+- `duration_ns`
+- `request_rate_per_sec`
+- `error_rate`
+- `p50_latency_ns`
+- `p95_latency_ns`
+- `p99_latency_ns`
+- `last_seen`
+- `log_count`
+- `active_alert_count`
+- `root_name`
+- `span_count`
+- `series`
+- `labels`
+- `points`
+- `next_cursor`
+- `truncated`
 
-**Query params:**
-
-| Param  | Type   | Required | Description                  |
-|--------|--------|----------|------------------------------|
-| `from` | string | yes      | Start of time range (ISO 8601) |
-| `to`   | string | yes      | End of time range (ISO 8601)  |
-| `env`  | string | no       | Filter by environment         |
-
-**Response:**
-
-```json
-{
-  "services": [
-    {
-      "service": "api-server",
-      "env": "production",
-      "last_seen": "2026-04-02T10:00:00Z",
-      "request_rate": 142.3,
-      "error_rate": 0.02,
-      "p99_latency_ms": 312,
-      "log_count": 48201
-    }
-  ]
-}
-```
-
-### 7.3 Metrics
-
-#### `GET /api/v1/metrics`
-
-Returns available metric names for a service (used for the Metrics tab selector).
-
-**Query params:**
-
-| Param     | Type   | Required | Description             |
-|-----------|--------|----------|-------------------------|
-| `service` | string | no       | Filter metrics by service |
-| `env`     | string | no       | Filter by environment   |
-
-**Response:**
-
-```json
-{
-  "metrics": ["http.request.duration", "http.request.count", "process.cpu.usage"]
-}
-```
-
-#### `GET /api/v1/metrics/query`
-
-Returns time-series data for one metric.
-
-**Query params:**
-
-| Param      | Type   | Required | Description                                |
-|------------|--------|----------|--------------------------------------------|
-| `metric`   | string | yes      | Metric name                                |
-| `from`     | string | yes      | Start of time range (ISO 8601)             |
-| `to`       | string | yes      | End of time range (ISO 8601)               |
-| `service`  | string | no       | Filter to service                          |
-| `env`      | string | no       | Filter by environment                      |
-| `host`     | string | no       | Filter by host                             |
-| `interval` | string | no       | Rollup interval: `1m`, `5m`, `1h`, etc.    |
-| `agg`      | string | no       | Aggregation: `avg`, `sum`, `max`, `min`, `p99`, `p95`, `p50` |
-
-**Response:**
-
-```json
-{
-  "metric": "http.request.duration",
-  "interval": "1m",
-  "agg": "p99",
-  "series": [
-    {
-      "labels": { "service": "api-server", "env": "production" },
-      "points": [
-        { "timestamp": "2026-04-02T09:00:00Z", "value": 287.4 },
-        { "timestamp": "2026-04-02T09:01:00Z", "value": 301.1 }
-      ]
-    }
-  ]
-}
-```
-
-### 7.4 Logs
-
-#### `GET /api/v1/logs/query`
-
-Returns log entries matching filters.
-
-**Query params:**
-
-| Param      | Type   | Required | Description                                  |
-|------------|--------|----------|----------------------------------------------|
-| `from`     | string | yes      | Start of time range (ISO 8601)               |
-| `to`       | string | yes      | End of time range (ISO 8601)                 |
-| `service`  | string | no       | Filter to service (repeatable for multi)     |
-| `level`    | string | no       | Filter by level: `DEBUG`, `INFO`, `WARN`, `ERROR` (repeatable) |
-| `host`     | string | no       | Filter by host                               |
-| `env`      | string | no       | Filter by environment                        |
-| `q`        | string | no       | Free-text search against `message` field     |
-| `trace_id` | string | no       | Filter to specific trace                     |
-| `limit`    | int    | no       | Max results (default 100, max 500)           |
-| `cursor`   | string | no       | Pagination cursor from prior response        |
-
-**Response:**
-
-```json
-{
-  "logs": [
-    {
-      "log_id": "abc123",
-      "timestamp": "2026-04-02T09:05:13.412Z",
-      "level": "ERROR",
-      "service": "api-server",
-      "host": "host-1",
-      "env": "production",
-      "message": "Failed to connect to database",
-      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-      "span_id": "00f067aa0ba902b7",
-      "attributes": {
-        "db.system": "postgresql",
-        "error.type": "ConnectionError"
-      }
-    }
-  ],
-  "next_cursor": "eyJ0cyI6IjIwMjYtMDQtMDJUMDk6MDU6MTMuNDEyWiJ9",
-  "total_matched": 1204
-}
-```
-
-#### `GET /api/v1/logs/volume`
-
-Returns log counts bucketed by time interval, used for the histogram in Log Explorer.
-
-**Query params:** same as `/logs/query` (minus `limit`, `cursor`), plus:
-
-| Param      | Type   | Required | Description                       |
-|------------|--------|----------|-----------------------------------|
-| `interval` | string | no       | Bucket size: `1m`, `5m`, `1h`    |
-
-**Response:**
-
-```json
-{
-  "interval": "5m",
-  "buckets": [
-    { "timestamp": "2026-04-02T09:00:00Z", "count": 412, "by_level": { "INFO": 380, "ERROR": 32 } },
-    { "timestamp": "2026-04-02T09:05:00Z", "count": 398, "by_level": { "INFO": 391, "ERROR": 7 } }
-  ]
-}
-```
-
-### 7.5 Traces
-
-#### `GET /api/v1/traces/query`
-
-Returns trace summaries matching filters.
-
-**Query params:**
-
-| Param          | Type   | Required | Description                                  |
-|----------------|--------|----------|----------------------------------------------|
-| `from`         | string | yes      | Start of time range (ISO 8601)               |
-| `to`           | string | yes      | End of time range (ISO 8601)                 |
-| `service`      | string | no       | Filter by root service                       |
-| `env`          | string | no       | Filter by environment                        |
-| `status`       | string | no       | `OK` or `ERROR`                              |
-| `min_duration` | int    | no       | Minimum trace duration in ms                 |
-| `max_duration` | int    | no       | Maximum trace duration in ms                 |
-| `trace_id`     | string | no       | Exact trace ID match                         |
-| `limit`        | int    | no       | Max results (default 50, max 200)            |
-| `cursor`       | string | no       | Pagination cursor                            |
-
-**Response:**
-
-```json
-{
-  "traces": [
-    {
-      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-      "root_service": "api-server",
-      "root_name": "POST /api/orders",
-      "start_time": "2026-04-02T09:05:10.100Z",
-      "duration_ms": 423,
-      "span_count": 8,
-      "status": "ERROR",
-      "env": "production"
-    }
-  ],
-  "next_cursor": "eyJ0cyI6IjIwMjYtMDQtMDJUMDk6MDU6MTAuMTAwWiJ9"
-}
-```
-
-#### `GET /api/v1/traces/:trace_id`
-
-Returns the full trace with all spans.
-
-**Path params:** `trace_id`
-
-**Response:**
-
-```json
-{
-  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "root_service": "api-server",
-  "root_name": "POST /api/orders",
-  "start_time": "2026-04-02T09:05:10.100Z",
-  "duration_ms": 423,
-  "status": "ERROR",
-  "env": "production",
-  "spans": [
-    {
-      "span_id": "00f067aa0ba902b7",
-      "parent_span_id": null,
-      "service": "api-server",
-      "name": "POST /api/orders",
-      "start_time": "2026-04-02T09:05:10.100Z",
-      "end_time": "2026-04-02T09:05:10.523Z",
-      "duration_ms": 423,
-      "status": "ERROR",
-      "status_message": "Internal Server Error",
-      "attributes": {
-        "http.method": "POST",
-        "http.route": "/api/orders",
-        "http.status_code": 500
-      }
-    },
-    {
-      "span_id": "a2fb4a1d1a96d312",
-      "parent_span_id": "00f067aa0ba902b7",
-      "service": "order-db",
-      "name": "db.query",
-      "start_time": "2026-04-02T09:05:10.200Z",
-      "end_time": "2026-04-02T09:05:10.480Z",
-      "duration_ms": 280,
-      "status": "ERROR",
-      "status_message": "Query timeout",
-      "attributes": {
-        "db.system": "postgresql",
-        "db.operation": "INSERT"
-      }
-    }
-  ]
-}
-```
-
-### 7.6 Log–Trace Correlation Convenience Endpoint
-
-The frontend requires a way to link from a trace span to related logs without a full log query. This endpoint allows the trace detail view to fetch logs matching a `trace_id` efficiently.
-
-This is satisfied by `GET /api/v1/logs/query?trace_id=<id>&limit=50` — no additional endpoint needed.
+If the UI wants alternate labels such as "P99 latency (ms)" or "Severity", that is a presentation concern only.
 
 ---
 
-## 8. Shared Identity Field Contracts
+## 8. Frontend Validation Rules
 
-These field names must be consistent across all signal types (metrics, logs, traces). The frontend relies on them for filtering and cross-signal linking.
-
-| Field       | Type   | Present in           | Description                                       |
-|-------------|--------|----------------------|---------------------------------------------------|
-| `service`   | string | metrics, logs, traces | Service name (e.g. `api-server`)                 |
-| `env`       | string | metrics, logs, traces | Deployment environment (e.g. `production`)       |
-| `host`      | string | logs, metrics         | Hostname of the emitting process                 |
-| `timestamp` | string | metrics, logs, traces | ISO 8601 event time                              |
-| `trace_id`  | string | logs, traces          | W3C trace context trace ID (32 hex chars)        |
-| `span_id`   | string | logs, traces          | W3C trace context span ID (16 hex chars)         |
-| `level`     | string | logs                  | `DEBUG`, `INFO`, `WARN`, `ERROR`                 |
-| `status`    | string | traces                | `OK` or `ERROR`                                  |
+- Do not generate requests with `from`, `to`, `env`, `service`, `root_service`, `level`, or `duration_ms` as API field names.
+- Do not assume uppercase trace status values in requests or responses.
+- Do not assume `parent_span_id == ""` on trace detail responses; the contract uses `null` there.
+- Do not assume log rows can be keyed by timestamp alone; use `log_id`.
+- Do not invent dashboard, service, log, trace, metric, or alert response fields beyond those listed in `INTERFACES.md`.
+- Treat `truncated` as meaningful response metadata and surface it in the UI.
 
 ---
 
-## 9. Open Questions for Other Agents
+## 9. Delivery Status
 
-These are unresolved items the frontend design depends on. Each requires a documented answer from the relevant agent before Phase 3 implementation begins.
+Resolved by `INTERFACES.md` and adopted here:
 
-| # | Question | Blocking | Owner |
-|---|----------|----------|-------|
-| 1 | What is the max supported `from`/`to` query window for logs and traces before the API requires further narrowing or pagination? | Log Explorer UX | Storage/API agent |
-| 2 | Will metric rollup intervals be computed server-side, or does the frontend specify the exact `interval` and the backend rejects unsupported values? Needs an enum of valid intervals. | Dashboard timeseries widget | Storage/API agent |
-| 3 | Is there a supported list of `env` values returned from an endpoint, or does the frontend derive them from service responses? | Global env selector | API agent |
-| 4 | What is the consistent field name convention for structured log attributes: flat (`attributes.db.system`) vs. nested JSON object? | Log detail drawer | Ingestion/Storage agent |
-| 5 | Will trace `status` be limited to `OK`/`ERROR`, or will OpenTelemetry's `UNSET` also be present? | Trace status filter | Ingestion agent |
-| 6 | Is cursor-based pagination the confirmed pagination model, or will offset/keyset be used? | Log Explorer load-more | API agent |
-| 7 | Will a `GET /api/v1/services` endpoint be implemented, or should the frontend derive service lists from log/trace/metric responses? | Services page | API agent |
+- time range params are `start` and `end`
+- environments are listed by `GET /api/v1/environments`
+- service summaries are provided by `GET /api/v1/services` and `GET /api/v1/services/:service_name/summary`
+- metric names come from `GET /api/v1/metrics/names`
+- logs use `severity_text` and `log_id`
+- traces use lowercase `status` and `duration_ns`
+- pagination is cursor-based
 
----
-
-## 10. Validation Checklist
-
-- [x] All deliverables from `tasks/frontend.md` are addressed (information architecture, dashboard, service detail, log explorer, trace explorer, API requirements)
-- [x] Every API endpoint specifies: method, path, query params, response shape, and consuming view
-- [x] No backend implementation details assumed (storage engine, ingestion internals)
-- [x] All field names used in UI descriptions match field names in Section 8 (identity contracts)
-- [x] Dashboard, service detail, log explorer, and trace explorer are self-consistent (same field names, same filter mechanics)
-- [x] Open questions are explicitly listed rather than resolved by assumption
+Remaining frontend work is implementation against these contracts once application code is present in the repo.
