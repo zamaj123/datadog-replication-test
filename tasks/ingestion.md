@@ -26,8 +26,8 @@ Must define contracts with storage before deep implementation.
   - Metric, log, and span write shapes aligned to the canonical ingestion to storage schemas
   - Histogram expansion behavior documented using per-bucket rows plus `_count` and `_sum`
   - Direct ClickHouse HTTP write path documented with batching and in-memory buffering rules
-  - Proposed ingestion-owned module structure updated around normalizers, validators, buffer, and ClickHouse writer
   - Old conflicting assumptions removed (`resource`-only storage boundary, storage write API, `summary` metrics, trace `events`/`links`, millisecond storage timestamps)
+  - Follow-up review alignment completed against `docs/review-alignment.md` ingestion findings without changing the contract in `INTERFACES.md`
 
 ### Blocked on
 - No ingestion-specific contract blockers remain for Phase 2 design work; `INTERFACES.md` is the authority for implementation.
