@@ -1,15 +1,16 @@
 import Fastify, { FastifyInstance } from "fastify";
 import JSONBigFactory from "json-bigint";
 
-import { MetricsWriter, NoopMetricsWriter } from "../clickhouse/writer";
+import { MetricsWriter } from "../clickhouse/writer";
 import { IngestionEnv } from "../config/env";
 import { registerMetricsRoute } from "../routes/metrics";
+import { registerNotImplementedIngestionRoutes } from "../routes/not-implemented";
 
 const JSONBig = JSONBigFactory({ useNativeBigInt: true });
 
 export interface BuildAppOptions {
   env: IngestionEnv;
-  metricsWriter?: MetricsWriter;
+  metricsWriter: MetricsWriter;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -30,8 +31,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   await registerMetricsRoute(app, {
     env: options.env,
-    writer: options.metricsWriter ?? new NoopMetricsWriter()
+    writer: options.metricsWriter
   });
+  await registerNotImplementedIngestionRoutes(app, { env: options.env });
 
   return app;
 }
