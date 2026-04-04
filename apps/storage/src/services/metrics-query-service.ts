@@ -6,7 +6,6 @@ import type {
   MetricQueryResponse,
   MetricRow,
 } from "./metrics-query-types.js";
-import { mockMetricRows } from "./mock-metrics.js";
 import { autoSelectStep, stepToBucketMs } from "./step-selection.js";
 
 function isoToMs(timestamp: string): number {
@@ -55,29 +54,6 @@ function aggregate(values: number[], agg: string): number {
     default:
       return values.reduce((sum, value) => sum + value, 0) / values.length;
   }
-}
-
-function filterRows(rows: MetricRow[], query: MetricQuery): MetricRow[] {
-  const startMs = Date.parse(query.start);
-  const endMs = Date.parse(query.end);
-
-  return rows.filter((row) => {
-    const rowMs = isoToMs(row.timestamp);
-    if (row.name !== query.name) {
-      return false;
-    }
-    if (rowMs < startMs || rowMs >= endMs) {
-      return false;
-    }
-    if (query.environment && row.environment !== query.environment) {
-      return false;
-    }
-    if (query.serviceName && row.service_name !== query.serviceName) {
-      return false;
-    }
-
-    return Object.entries(query.filters).every(([key, value]) => row.tags[key] === value);
-  });
 }
 
 function defaultLabels(query: MetricQuery): Record<string, string> {
@@ -154,30 +130,6 @@ function shapeMetricSeries(rows: MetricRow[], query: MetricQuery): MetricQueryRe
   };
 }
 
-function listMetricNamesFromRows(
-  rows: MetricRow[],
-  filters: { environment?: string; serviceName?: string },
-): MetricNamesResponse {
-  const names = [
-    ...new Set(
-      rows
-        .filter((row) => {
-          if (filters.environment && row.environment !== filters.environment) {
-            return false;
-          }
-          if (filters.serviceName && row.service_name !== filters.serviceName) {
-            return false;
-          }
-
-          return true;
-        })
-        .map((row) => row.name),
-    ),
-  ].sort();
-
-  return { names };
-}
-
 function buildWhereClause(query: MetricQuery): string {
   const clauses = [
     `timestamp >= fromUnixTimestamp64Nano(${Date.parse(query.start) * 1_000_000})`,
@@ -202,12 +154,8 @@ function buildWhereClause(query: MetricQuery): string {
 
 export async function queryMetricSeries(
   query: MetricQuery,
-  clickhouseClient?: ClickHouseClient | null,
+  clickhouseClient: ClickHouseClient,
 ): Promise<MetricQueryResponse> {
-  if (!clickhouseClient) {
-    return shapeMetricSeries(filterRows(mockMetricRows, query), query);
-  }
-
   const clickhouseRows = await clickhouseClient.queryJsonEachRow<
     Omit<MetricRow, "timestamp"> & { timestamp_ms: number }
   >(`
@@ -233,12 +181,8 @@ FORMAT JSONEachRow
 
 export async function listMetricNames(
   filters: { environment?: string; serviceName?: string },
-  clickhouseClient?: ClickHouseClient | null,
+  clickhouseClient: ClickHouseClient,
 ): Promise<MetricNamesResponse> {
-  if (!clickhouseClient) {
-    return listMetricNamesFromRows(mockMetricRows, filters);
-  }
-
   const whereClauses: string[] = [];
   if (filters.environment) {
     whereClauses.push(`environment = ${sqlString(filters.environment)}`);

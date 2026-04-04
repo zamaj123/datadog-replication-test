@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
-import { badRequest } from "../lib/http-errors.js";
+import { badRequest, serviceUnavailable } from "../lib/http-errors.js";
 import { listMetricNames, queryMetricSeries } from "../services/metrics-query-service.js";
 import type { MetricQuery } from "../services/metrics-query-types.js";
 import { extractString, requireTimeRange } from "./shared.js";
@@ -82,10 +82,17 @@ function parseMetricNamesQuery(rawQuery: Record<string, unknown>) {
 export async function registerMetricsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/v1/metrics/query", async (request: FastifyRequest, reply: FastifyReply) => {
     const query = parseMetricQuery(request.query as Record<string, unknown>);
+    if (!app.storage.clickhouse) {
+      throw serviceUnavailable("clickhouse is not configured");
+    }
     reply.send(await queryMetricSeries(query, app.storage.clickhouse));
   });
 
   app.get("/api/v1/metrics/names", async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!app.storage.clickhouse) {
+      throw serviceUnavailable("clickhouse is not configured");
+    }
+
     const query = parseMetricNamesQuery(request.query as Record<string, unknown>);
     reply.send(await listMetricNames(query, app.storage.clickhouse));
   });

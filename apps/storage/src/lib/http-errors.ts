@@ -17,3 +17,6 @@ export function unauthorized(message = "unauthorized"): HttpError {
   return new HttpError(401, message, "unauthorized");
 }
 
+export function serviceUnavailable(message: string): HttpError {
+  return new HttpError(503, message, "service_unavailable");
+}
