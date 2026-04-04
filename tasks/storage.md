@@ -14,7 +14,7 @@ Design and implement storage and query foundations for metrics, logs, and traces
 - [ ] Implementation (Phase 2)
 
 ## Status
-Design updated to conform to `INTERFACES.md`. Storage-owned contract drift removed from `docs/storage-design.md`. Implementation remains pending.
+Design updated to conform to `INTERFACES.md`. Initial `apps/storage` Node.js + TypeScript scaffold is in place for the metrics read path with mocked contract-aligned responses. Broader Phase 2 implementation remains pending.
 
 ## Boundaries
 Allowed: schemas, storage services, indexes, query interfaces
