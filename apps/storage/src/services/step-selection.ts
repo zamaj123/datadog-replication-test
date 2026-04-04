@@ -5,7 +5,7 @@ export function autoSelectStep(startMs: number, endMs: number): string {
   const rangeMs = endMs - startMs;
 
   if (rangeMs <= 3 * MS_PER_HOUR) {
-    return "raw";
+    return "1m";
   }
 
   if (rangeMs <= 2 * MS_PER_DAY) {
@@ -33,10 +33,7 @@ export function stepToBucketMs(step: string): number | null {
       return 6 * 60 * 60_000;
     case "1d":
       return 24 * 60 * 60_000;
-    case "raw":
-      return null;
     default:
       return null;
   }
 }
-

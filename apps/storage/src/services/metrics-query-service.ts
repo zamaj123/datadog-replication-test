@@ -1,9 +1,10 @@
+import { ClickHouseClient, sqlIdentifier, sqlString } from "../lib/clickhouse.js";
 import type {
   MetricNamesResponse,
   MetricPoint,
   MetricQuery,
   MetricQueryResponse,
-  MockMetricRow,
+  MetricRow,
 } from "./metrics-query-types.js";
 import { mockMetricRows } from "./mock-metrics.js";
 import { autoSelectStep, stepToBucketMs } from "./step-selection.js";
@@ -56,11 +57,11 @@ function aggregate(values: number[], agg: string): number {
   }
 }
 
-function filterRows(query: MetricQuery): MockMetricRow[] {
+function filterRows(rows: MetricRow[], query: MetricQuery): MetricRow[] {
   const startMs = Date.parse(query.start);
   const endMs = Date.parse(query.end);
 
-  return mockMetricRows.filter((row) => {
+  return rows.filter((row) => {
     const rowMs = isoToMs(row.timestamp);
     if (row.name !== query.name) {
       return false;
@@ -97,7 +98,7 @@ function defaultLabels(query: MetricQuery): Record<string, string> {
   return labels;
 }
 
-function labelValueForDimension(row: MockMetricRow, dimension: string): string {
+function labelValueForDimension(row: MetricRow, dimension: string): string {
   if (dimension === "service_name") {
     return row.service_name;
   }
@@ -109,12 +110,11 @@ function labelValueForDimension(row: MockMetricRow, dimension: string): string {
   return row.tags[dimension] ?? "";
 }
 
-export function queryMetricSeries(query: MetricQuery): MetricQueryResponse {
+function shapeMetricSeries(rows: MetricRow[], query: MetricQuery): MetricQueryResponse {
   const startMs = Date.parse(query.start);
   const endMs = Date.parse(query.end);
   const selectedStep = query.step ?? autoSelectStep(startMs, endMs);
   const bucketMs = stepToBucketMs(selectedStep);
-  const rows = filterRows(query);
   const seriesMap = new Map<string, { labels: Record<string, string>; points: Map<number, number[]> }>();
 
   for (const row of rows) {
@@ -154,22 +154,106 @@ export function queryMetricSeries(query: MetricQuery): MetricQueryResponse {
   };
 }
 
-export function listMetricNames(filters: { environment?: string; serviceName?: string }): MetricNamesResponse {
-  const names = [...new Set(
-    mockMetricRows
-      .filter((row) => {
-        if (filters.environment && row.environment !== filters.environment) {
-          return false;
-        }
-        if (filters.serviceName && row.service_name !== filters.serviceName) {
-          return false;
-        }
+function listMetricNamesFromRows(
+  rows: MetricRow[],
+  filters: { environment?: string; serviceName?: string },
+): MetricNamesResponse {
+  const names = [
+    ...new Set(
+      rows
+        .filter((row) => {
+          if (filters.environment && row.environment !== filters.environment) {
+            return false;
+          }
+          if (filters.serviceName && row.service_name !== filters.serviceName) {
+            return false;
+          }
 
-        return true;
-      })
-      .map((row) => row.name),
-  )].sort();
+          return true;
+        })
+        .map((row) => row.name),
+    ),
+  ].sort();
 
   return { names };
 }
 
+function buildWhereClause(query: MetricQuery): string {
+  const clauses = [
+    `timestamp >= fromUnixTimestamp64Nano(${Date.parse(query.start) * 1_000_000})`,
+    `timestamp < fromUnixTimestamp64Nano(${Date.parse(query.end) * 1_000_000})`,
+    `name = ${sqlString(query.name)}`,
+  ];
+
+  if (query.environment) {
+    clauses.push(`environment = ${sqlString(query.environment)}`);
+  }
+
+  if (query.serviceName) {
+    clauses.push(`service_name = ${sqlString(query.serviceName)}`);
+  }
+
+  for (const [key, value] of Object.entries(query.filters)) {
+    clauses.push(`tags[${sqlString(key)}] = ${sqlString(value)}`);
+  }
+
+  return clauses.join(" AND ");
+}
+
+export async function queryMetricSeries(
+  query: MetricQuery,
+  clickhouseClient?: ClickHouseClient | null,
+): Promise<MetricQueryResponse> {
+  if (!clickhouseClient) {
+    return shapeMetricSeries(filterRows(mockMetricRows, query), query);
+  }
+
+  const clickhouseRows = await clickhouseClient.queryJsonEachRow<
+    Omit<MetricRow, "timestamp"> & { timestamp_ms: number }
+  >(`
+SELECT
+  toUnixTimestamp64Milli(timestamp) AS timestamp_ms,
+  service_name,
+  environment,
+  name,
+  tags,
+  value
+FROM metrics
+WHERE ${buildWhereClause(query)}
+FORMAT JSONEachRow
+`);
+
+  const rows: MetricRow[] = clickhouseRows.map((row) => ({
+    ...row,
+    timestamp: formatIso(row.timestamp_ms),
+  }));
+
+  return shapeMetricSeries(rows, query);
+}
+
+export async function listMetricNames(
+  filters: { environment?: string; serviceName?: string },
+  clickhouseClient?: ClickHouseClient | null,
+): Promise<MetricNamesResponse> {
+  if (!clickhouseClient) {
+    return listMetricNamesFromRows(mockMetricRows, filters);
+  }
+
+  const whereClauses: string[] = [];
+  if (filters.environment) {
+    whereClauses.push(`environment = ${sqlString(filters.environment)}`);
+  }
+  if (filters.serviceName) {
+    whereClauses.push(`service_name = ${sqlString(filters.serviceName)}`);
+  }
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+  const rows = await clickhouseClient.queryJsonEachRow<{ name: string }>(`
+SELECT DISTINCT ${sqlIdentifier("name")} AS name
+FROM metrics
+${whereSql}
+ORDER BY name
+FORMAT JSONEachRow
+`);
+
+  return { names: rows.map((row) => row.name) };
+}

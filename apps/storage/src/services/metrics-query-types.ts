@@ -41,3 +41,4 @@ export type MockMetricRow = {
   value: number;
 };
 
+export type MetricRow = MockMetricRow;

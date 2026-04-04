@@ -4,59 +4,19 @@ import { z } from "zod";
 import { badRequest } from "../lib/http-errors.js";
 import { listMetricNames, queryMetricSeries } from "../services/metrics-query-service.js";
 import type { MetricQuery } from "../services/metrics-query-types.js";
+import { extractString, requireTimeRange } from "./shared.js";
 
-const isoDatetime = z.string().datetime({ offset: true });
 const stepSchema = z.enum(["1m", "5m", "15m", "1h", "6h", "1d"]);
 const aggSchema = z.enum(["avg", "min", "max", "sum", "count", "p50", "p95", "p99"]);
 const groupDimensionSchema = z.string().regex(/^(service_name|environment|[a-z_][a-z0-9_.]*)$/);
 const filterKeySchema = z.string().regex(/^[a-z_][a-z0-9_.]*$/);
 
-function extractString(query: Record<string, unknown>, key: string): string | undefined {
-  const value = query[key];
-
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (Array.isArray(value) && value.length === 1 && typeof value[0] === "string") {
-    return value[0];
-  }
-
-  throw badRequest(`invalid parameter: ${key}`);
-}
-
 function parseMetricQuery(rawQuery: Record<string, unknown>): MetricQuery {
-  const start = extractString(rawQuery, "start");
-  if (!start) {
-    throw badRequest("missing required parameter: start");
-  }
-
-  const end = extractString(rawQuery, "end");
-  if (!end) {
-    throw badRequest("missing required parameter: end");
-  }
+  const { start, end } = requireTimeRange(rawQuery);
 
   const name = extractString(rawQuery, "name");
   if (!name) {
     throw badRequest("missing required parameter: name");
-  }
-
-  const startResult = isoDatetime.safeParse(start);
-  if (!startResult.success) {
-    throw badRequest("invalid parameter: start");
-  }
-
-  const endResult = isoDatetime.safeParse(end);
-  if (!endResult.success) {
-    throw badRequest("invalid parameter: end");
-  }
-
-  if (Date.parse(end) <= Date.parse(start)) {
-    throw badRequest("end must be greater than start");
   }
 
   const step = extractString(rawQuery, "step");
@@ -80,7 +40,7 @@ function parseMetricQuery(rawQuery: Record<string, unknown>): MetricQuery {
   }
 
   const filters: Record<string, string> = {};
-  for (const [key, value] of Object.entries(rawQuery)) {
+  for (const key of Object.keys(rawQuery)) {
     const match = /^filter\[(.+)\]$/.exec(key);
     if (!match) {
       continue;
@@ -122,12 +82,11 @@ function parseMetricNamesQuery(rawQuery: Record<string, unknown>) {
 export async function registerMetricsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/v1/metrics/query", async (request: FastifyRequest, reply: FastifyReply) => {
     const query = parseMetricQuery(request.query as Record<string, unknown>);
-    reply.send(queryMetricSeries(query));
+    reply.send(await queryMetricSeries(query, app.storage.clickhouse));
   });
 
   app.get("/api/v1/metrics/names", async (request: FastifyRequest, reply: FastifyReply) => {
     const query = parseMetricNamesQuery(request.query as Record<string, unknown>);
-    reply.send(listMetricNames(query));
+    reply.send(await listMetricNames(query, app.storage.clickhouse));
   });
 }
-

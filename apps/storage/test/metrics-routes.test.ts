@@ -6,7 +6,7 @@ describe("metrics routes", () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
 
   beforeEach(async () => {
-    app = await buildApp({ port: 3000, apiKey: "test-key" });
+    app = await buildApp({ port: 3000, apiKey: "test-key", clickhouse: null });
   });
 
   afterEach(async () => {
@@ -55,6 +55,22 @@ describe("metrics routes", () => {
     });
   });
 
+  it("does not return a non-contract raw step token for short ranges", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/metrics/query?start=2026-04-02T09:00:00Z&end=2026-04-02T10:00:00Z&name=http.request.duration&service_name=api-server&environment=production",
+      headers: { "x-api-key": "test-key" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      name: "http.request.duration",
+      step: "1m",
+      agg: "avg",
+      truncated: false,
+    });
+  });
+
   it("returns contract error shape for missing required params", async () => {
     const response = await app.inject({
       method: "GET",
@@ -81,5 +97,46 @@ describe("metrics routes", () => {
       code: "unauthorized",
     });
   });
-});
 
+  it("registers the remaining canonical query endpoints so they do not 404", async () => {
+    const responses = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: "/api/v1/logs?start=2026-04-02T09:00:00Z&end=2026-04-02T10:00:00Z&count_only=true",
+        headers: { "x-api-key": "test-key" },
+      }),
+      app.inject({
+        method: "GET",
+        url: "/api/v1/logs/volume?start=2026-04-02T09:00:00Z&end=2026-04-02T10:00:00Z",
+        headers: { "x-api-key": "test-key" },
+      }),
+      app.inject({
+        method: "GET",
+        url: "/api/v1/traces?start=2026-04-02T09:00:00Z&end=2026-04-02T10:00:00Z",
+        headers: { "x-api-key": "test-key" },
+      }),
+      app.inject({
+        method: "GET",
+        url: "/api/v1/services?start=2026-04-02T09:00:00Z&end=2026-04-02T10:00:00Z",
+        headers: { "x-api-key": "test-key" },
+      }),
+      app.inject({
+        method: "GET",
+        url: "/api/v1/services/api-server/summary?start=2026-04-02T09:00:00Z&end=2026-04-02T10:00:00Z",
+        headers: { "x-api-key": "test-key" },
+      }),
+      app.inject({
+        method: "GET",
+        url: "/api/v1/environments",
+        headers: { "x-api-key": "test-key" },
+      }),
+      app.inject({
+        method: "GET",
+        url: "/api/v1/traces/4bf92f3577b34da6a3ce929d0e0e4736",
+        headers: { "x-api-key": "test-key" },
+      }),
+    ]);
+
+    expect(responses.map((response) => response.statusCode)).toEqual([200, 200, 200, 200, 200, 200, 404]);
+  });
+});

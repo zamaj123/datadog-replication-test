@@ -2,11 +2,24 @@ import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 
 import type { StorageEnv } from "../config/env.js";
+import { ClickHouseClient } from "../lib/clickhouse.js";
 import { HttpError, unauthorized } from "../lib/http-errors.js";
 import { registerMetricsRoutes } from "../routes/metrics.js";
+import { registerPlaceholderQueryRoutes } from "../routes/query-placeholders.js";
+
+declare module "fastify" {
+  interface FastifyInstance {
+    storage: {
+      clickhouse: ClickHouseClient | null;
+    };
+  }
+}
 
 export async function buildApp(env: StorageEnv): Promise<FastifyInstance> {
   const app = Fastify();
+  app.decorate("storage", {
+    clickhouse: env.clickhouse ? new ClickHouseClient(env.clickhouse) : null,
+  });
 
   app.addHook("onRequest", async (request) => {
     const apiKey = request.headers["x-api-key"];
@@ -26,7 +39,7 @@ export async function buildApp(env: StorageEnv): Promise<FastifyInstance> {
   });
 
   await registerMetricsRoutes(app);
+  await registerPlaceholderQueryRoutes(app);
 
   return app;
 }
-
