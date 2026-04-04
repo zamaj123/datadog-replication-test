@@ -40,7 +40,7 @@ Reason:
 Create the storage implementation under:
 
 ```text
-storage/
+apps/storage/
 ```
 
 Reason:
@@ -51,11 +51,10 @@ Reason:
 Proposed top-level layout:
 
 ```text
-storage/
+apps/storage/
   package.json
   tsconfig.json
   src/
-  migrations/
   test/
 ```
 
@@ -76,23 +75,24 @@ Why Fastify:
 - No need for a heavier framework for the current storage API surface
 
 Request handling shape:
-- `src/server.ts` boots Fastify and config
+- `src/server/app.ts` boots Fastify and config
+- `src/index.ts` starts the HTTP listener
 - `src/routes/metrics.ts` owns metrics endpoints
 - `src/services/metrics-query-service.ts` builds and runs ClickHouse queries
-- `src/lib/clickhouse.ts` owns the ClickHouse client
+- `src/lib/clickhouse.ts` owns the ClickHouse client when real wiring replaces mocks
 
 ### 5.4 ClickHouse Schema and Migration Layout
 
 Use plain SQL migration files in:
 
 ```text
-storage/migrations/clickhouse/
+apps/storage/migrations/clickhouse/
 ```
 
 Layout:
 
 ```text
-storage/migrations/clickhouse/
+apps/storage/migrations/clickhouse/
   001_metrics.sql
   002_metrics_rollups.sql
 ```
@@ -114,7 +114,7 @@ Migration approach:
 The scaffold should also include a tiny runner script under:
 
 ```text
-storage/src/scripts/run-clickhouse-migrations.ts
+apps/storage/src/scripts/run-clickhouse-migrations.ts
 ```
 
 That runner is implementation support only; it does not redefine any schema or contract.
@@ -129,7 +129,7 @@ Config source:
 Storage-owned config module:
 
 ```text
-storage/src/config.ts
+apps/storage/src/config/env.ts
 ```
 
 Required config for the initial scaffold:
@@ -159,7 +159,7 @@ Initial test layers:
 Add optional integration tests for ClickHouse under:
 
 ```text
-storage/test/integration/
+apps/storage/test/integration/
 ```
 
 Those tests should run only when ClickHouse is available locally. The scaffold should not require them for every edit, but it should leave a clear place for them.
@@ -169,45 +169,48 @@ Those tests should run only when ClickHouse is available locally. The scaffold s
 Minimal initial scaffold files:
 
 ```text
-storage/package.json
-storage/tsconfig.json
-storage/src/server.ts
-storage/src/config.ts
-storage/src/lib/clickhouse.ts
-storage/src/routes/metrics.ts
-storage/src/services/metrics-query-service.ts
-storage/src/services/metrics-query-types.ts
-storage/src/services/step-selection.ts
-storage/src/scripts/run-clickhouse-migrations.ts
-storage/migrations/clickhouse/001_metrics.sql
-storage/migrations/clickhouse/002_metrics_rollups.sql
-storage/test/metrics-routes.test.ts
-storage/test/metrics-query-service.test.ts
-storage/test/step-selection.test.ts
-storage/README.md
+apps/storage/package.json
+apps/storage/tsconfig.json
+apps/storage/src/index.ts
+apps/storage/src/server/app.ts
+apps/storage/src/config/env.ts
+apps/storage/src/lib/clickhouse.ts
+apps/storage/src/routes/metrics.ts
+apps/storage/src/services/metrics-query-service.ts
+apps/storage/src/services/metrics-query-types.ts
+apps/storage/src/services/step-selection.ts
+apps/storage/src/scripts/run-clickhouse-migrations.ts
+apps/storage/migrations/clickhouse/001_metrics.sql
+apps/storage/migrations/clickhouse/002_metrics_rollups.sql
+apps/storage/test/metrics-routes.test.ts
+apps/storage/test/metrics-query-service.test.ts
+apps/storage/test/step-selection.test.ts
+apps/storage/README.md
 ```
 
 File responsibilities:
-- `server.ts`
+- `src/index.ts`
+  - start the Fastify server
+- `src/server/app.ts`
   - boot Fastify
   - register auth and routes
-- `config.ts`
+- `src/config/env.ts`
   - validate env vars
-- `lib/clickhouse.ts`
+- `src/lib/clickhouse.ts`
   - construct shared ClickHouse client
-- `routes/metrics.ts`
+- `src/routes/metrics.ts`
   - implement `/api/v1/metrics/query` and `/api/v1/metrics/names`
-- `metrics-query-service.ts`
+- `src/services/metrics-query-service.ts`
   - choose raw vs rollup table
   - build ClickHouse queries
   - shape canonical metric responses
-- `metrics-query-types.ts`
+- `src/services/metrics-query-types.ts`
   - local TypeScript types that mirror the existing storage contract
-- `step-selection.ts`
+- `src/services/step-selection.ts`
   - implement the exact step auto-selection rules from `INTERFACES.md`
-- `run-clickhouse-migrations.ts`
+- `src/scripts/run-clickhouse-migrations.ts`
   - apply SQL files in order
-- `001_metrics.sql` and `002_metrics_rollups.sql`
+- `migrations/clickhouse/001_metrics.sql` and `migrations/clickhouse/002_metrics_rollups.sql`
   - define schema already specified in `docs/storage-design.md`
 - test files
   - validate contract compliance for the metrics path

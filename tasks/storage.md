@@ -14,7 +14,7 @@ Design and implement storage and query foundations for metrics, logs, and traces
 - [ ] Implementation (Phase 2)
 
 ## Status
-Design updated to conform to `INTERFACES.md`. Storage-owned contract drift removed from `docs/storage-design.md`. Implementation remains pending.
+Design updated to conform to `INTERFACES.md`. `apps/storage` now requires ClickHouse configuration for the metrics read path and returns an explicit error instead of synthetic data when that dependency is absent. Broader Phase 2 implementation remains pending.
 
 ## Boundaries
 Allowed: schemas, storage services, indexes, query interfaces
