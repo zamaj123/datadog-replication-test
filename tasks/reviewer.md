@@ -161,3 +161,19 @@ Prospective review based on standard observability platform patterns. Superseded
   - Go-style ingestion module layout
   - non-canonical query paths and params
   - stale frontend aliases such as `from` / `to`, `env`, `service`, and `level`
+
+### Phase 3 — Implementation PR review for ingestion, storage, and frontend (2026-04-04)
+
+**Output:** `docs/review-implementation.md`
+
+**Summary of findings:**
+
+- Reviewed PR #24 (frontend), PR #25 (storage), and PR #26 (ingestion).
+- Findings were limited to contract conformance, subsystem integration, and obvious end-to-end failures.
+- The main blocking issues are:
+  - ingestion currently acknowledges metrics without writing them to ClickHouse
+  - ingestion still lacks the required logs and traces endpoints
+  - storage still serves mock metric data instead of querying ClickHouse
+  - storage only exposes metrics endpoints rather than the full canonical query API
+  - storage returns `step: "raw"`, which is outside the documented response contract
+- No frontend-only correctness finding was identified in the current metrics-only slice; its integration risk is downstream of the ingestion and storage issues above.
