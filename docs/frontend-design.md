@@ -45,7 +45,7 @@ This document keeps the UI scope from the earlier design but replaces the stale 
 Recommended structure:
 
 ```text
-apps/web/
+apps/frontend/
   src/
     app/
       router.tsx
