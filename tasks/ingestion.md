@@ -34,12 +34,23 @@ Must define contracts with storage before deep implementation.
   - Fastify selected as the minimal HTTP server framework for `/v1` ingestion routes
   - Environment-based config and Vitest-based test approach defined for the initial scaffold
   - Metrics-first implementation slice retained without changing shared contracts
+- [x] Initial ingestion scaffold created under `apps/ingestion/`
+  - Node.js + TypeScript package metadata and compiler config added
+  - Fastify app bootstrap and HTTP server entrypoint added
+  - `POST /v1/metrics` implemented with JSON parsing and `X-Api-Key` auth
+  - Metrics normalization and validation implemented against `INTERFACES.md`
+  - Placeholder metrics writer added in place of full ClickHouse wiring
+  - Initial Vitest coverage added for auth, normalization, and metrics pipeline behavior
+- [x] Implementation review issues addressed for ingestion
+  - Real ClickHouse config loading and metrics writer wiring added for the metrics path
+  - `/v1/logs` and `/v1/traces` routes registered so canonical ingestion endpoints no longer 404
+  - Tests updated to cover route registration and non-noop writer integration
 
 ### Blocked on
 - No ingestion-specific contract blockers remain for Phase 2 design work; `INTERFACES.md` is the authority for implementation.
 
 ### Next steps
-- Implement canonical ingestion schema types and normalization helpers
-- Implement signal parsers + validators with unit tests
-- Implement the ClickHouse batch writer using HTTP `FORMAT JSONEachRow`
+- Implement contract-compliant logs and traces ingestion behavior behind the registered routes
+- Add in-memory batching and flush interval behavior for ClickHouse writes
+- Expand test coverage for request-envelope failures and writer failure paths
 - End-to-end test with a Node.js OTel emitter and canonical row verification
