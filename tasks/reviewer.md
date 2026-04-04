@@ -177,3 +177,17 @@ Prospective review based on standard observability platform patterns. Superseded
   - storage only exposes metrics endpoints rather than the full canonical query API
   - storage returns `step: "raw"`, which is outside the documented response contract
 - No frontend-only correctness finding was identified in the current metrics-only slice; its integration risk is downstream of the ingestion and storage issues above.
+
+### Phase 3b — Implementation PR review after subsystem updates (2026-04-04)
+
+**Output:** `docs/review-implementation-2.md`
+
+**Summary of findings:**
+
+- Re-reviewed PR #24, PR #25, and PR #26 after they were updated.
+- The first-pass findings about the no-op ingestion writer and the `"raw"` metrics step were fixed.
+- Remaining blocking issues are:
+  - ingestion still returns `501` for `/v1/logs` and `/v1/traces`
+  - storage can still run without ClickHouse and silently fall back to fixture metric data
+  - storage’s non-metrics query endpoints are still placeholder-only and not backed by real query logic
+- No frontend-only correctness finding was identified in the current metrics slice; the remaining integration blockers are still in ingestion and storage.
