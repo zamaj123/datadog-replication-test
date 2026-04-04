@@ -38,7 +38,7 @@ Rationale:
 
 Create the frontend app under:
 
-`frontend/`
+`apps/frontend/`
 
 This keeps implementation separate from the current top-level contract and design docs while remaining inside the frontend agent's ownership boundary.
 
@@ -53,7 +53,7 @@ Use:
 Minimal app shape:
 
 ```text
-frontend/
+apps/frontend/
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
@@ -131,7 +131,7 @@ No frontend config should rename query params or response fields from the contra
 
 ### 3.2 API Client Rules
 
-Create a small typed fetch layer in `frontend/src/lib/api/` with these rules:
+Create a small typed fetch layer in `apps/frontend/src/lib/api/` with these rules:
 
 - always send `X-Api-Key`
 - preserve canonical request params: `start`, `end`, `environment`, `service_name`, `name`, `step`, `agg`, `group_by`, `filter[...]`, `cursor`
@@ -166,7 +166,7 @@ This scaffold must support the contract-defined metrics path first.
 
 Place initial metrics-specific code under:
 
-`frontend/src/features/metrics/`
+`apps/frontend/src/features/metrics/`
 
 Initial responsibilities:
 
@@ -241,51 +241,51 @@ These are the first files the frontend scaffold should add in a later implementa
 
 ### 6.1 Root App Files
 
-- `frontend/package.json`
-- `frontend/tsconfig.json`
-- `frontend/vite.config.ts`
-- `frontend/index.html`
-- `frontend/.env.example`
+- `apps/frontend/package.json`
+- `apps/frontend/tsconfig.json`
+- `apps/frontend/vite.config.ts`
+- `apps/frontend/index.html`
+- `apps/frontend/.env.example`
 
 ### 6.2 App Boot Files
 
-- `frontend/src/main.tsx`
-- `frontend/src/app/router.tsx`
-- `frontend/src/app/providers.tsx`
-- `frontend/src/app/layout/AppShell.tsx`
+- `apps/frontend/src/main.tsx`
+- `apps/frontend/src/app/router.tsx`
+- `apps/frontend/src/app/providers.tsx`
+- `apps/frontend/src/app/layout/AppShell.tsx`
 
 ### 6.3 API Layer
 
-- `frontend/src/lib/api/client.ts`
-- `frontend/src/lib/api/types.ts`
-- `frontend/src/lib/api/metrics.ts`
-- `frontend/src/lib/api/environments.ts`
-- `frontend/src/lib/api/services.ts`
+- `apps/frontend/src/lib/api/client.ts`
+- `apps/frontend/src/lib/api/types.ts`
+- `apps/frontend/src/lib/api/metrics.ts`
+- `apps/frontend/src/lib/api/environments.ts`
+- `apps/frontend/src/lib/api/services.ts`
 
 ### 6.4 Metrics Feature Files
 
-- `frontend/src/features/metrics/types.ts`
-- `frontend/src/features/metrics/api.ts`
-- `frontend/src/features/metrics/hooks.ts`
-- `frontend/src/features/metrics/components/MetricsPicker.tsx`
-- `frontend/src/features/metrics/components/MetricsChart.tsx`
-- `frontend/src/features/metrics/components/MetricsState.tsx`
+- `apps/frontend/src/features/metrics/types.ts`
+- `apps/frontend/src/features/metrics/api.ts`
+- `apps/frontend/src/features/metrics/hooks.ts`
+- `apps/frontend/src/features/metrics/components/MetricsPicker.tsx`
+- `apps/frontend/src/features/metrics/components/MetricsChart.tsx`
+- `apps/frontend/src/features/metrics/components/MetricsState.tsx`
 
 ### 6.5 Initial Pages
 
-- `frontend/src/pages/dashboard/OverviewPage.tsx`
-- `frontend/src/pages/services/ServicesListPage.tsx`
-- `frontend/src/pages/services/ServiceDetailPage.tsx`
+- `apps/frontend/src/pages/dashboard/OverviewPage.tsx`
+- `apps/frontend/src/pages/services/ServicesListPage.tsx`
+- `apps/frontend/src/pages/services/ServiceDetailPage.tsx`
 
 ### 6.6 Test Files
 
-- `frontend/src/test/setup.ts`
-- `frontend/src/test/msw/server.ts`
-- `frontend/src/test/msw/handlers.ts`
-- `frontend/src/features/metrics/api.test.ts`
-- `frontend/src/features/metrics/components/MetricsPicker.test.tsx`
-- `frontend/src/features/metrics/components/MetricsChart.test.tsx`
-- `frontend/tests/metrics-ui.spec.ts`
+- `apps/frontend/src/test/setup.ts`
+- `apps/frontend/src/test/msw/server.ts`
+- `apps/frontend/src/test/msw/handlers.ts`
+- `apps/frontend/src/features/metrics/api.test.ts`
+- `apps/frontend/src/features/metrics/components/MetricsPicker.test.tsx`
+- `apps/frontend/src/features/metrics/components/MetricsChart.test.tsx`
+- `apps/frontend/tests/metrics-ui.spec.ts`
 
 ---
 
@@ -308,7 +308,7 @@ These can be added later only if required by future frontend work and still alig
 
 In the first implementation turn after scaffold creation:
 
-1. create the Vite + React + TypeScript app under `frontend/`
+1. create the Vite + React + TypeScript app under `apps/frontend/`
 2. build the typed API client with `X-Api-Key` support
 3. implement the service detail metrics tab path using `GET /api/v1/metrics/names` and `GET /api/v1/metrics/query`
 4. add MSW-backed tests for the metric request/response contract

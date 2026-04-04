@@ -12,6 +12,7 @@ Design and implement the observability UI.
 - [x] API requirements for frontend — `docs/frontend-design.md` §7–8
 - [x] Contract alignment to `INTERFACES.md` — `docs/frontend-design.md`
 - [x] Implementation scaffold plan — `docs/frontend-implementation-plan.md`
+- [x] Initial metrics scaffold implementation — `apps/frontend`
 
 ## Boundaries
 Allowed: frontend app, UI components, page flows, client-side state
@@ -31,4 +32,4 @@ Must depend on documented query APIs and shared field names.
 8. Service summaries come from `GET /api/v1/services` and `GET /api/v1/services/:service_name/summary`
 
 ## Status
-Phase 1 design updated to conform to the finalized cross-subsystem contract. Initial frontend scaffold plan documented in `docs/frontend-implementation-plan.md`.
+Initial frontend scaffold created in `apps/frontend` with bootstrap, metric names fetch, and metric query rendering aligned to `INTERFACES.md`.
