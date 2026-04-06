@@ -69,7 +69,7 @@ describe("metrics query service", () => {
 
     expect(response).toEqual({
       name: "http.request.duration",
-      step: "1m",
+      step: "raw",
       agg: "avg",
       truncated: false,
       series: [

@@ -93,8 +93,9 @@ function labelValueForDimension(row: MetricRow, dimension: string): string {
 function shapeMetricSeries(rows: MetricRow[], query: MetricQuery): MetricQueryResponse {
   const startMs = Date.parse(query.start);
   const endMs = Date.parse(query.end);
+  const usesRawData = shouldUseRawData(startMs, endMs, query.step);
   const selectedStep = query.step ?? autoSelectStep(startMs, endMs);
-  const bucketMs = shouldUseRawData(startMs, endMs, query.step) ? null : stepToBucketMs(selectedStep);
+  const bucketMs = usesRawData ? null : stepToBucketMs(selectedStep);
   const seriesMap = new Map<string, { labels: Record<string, string>; points: Map<number, number[]> }>();
 
   for (const row of rows) {
@@ -127,7 +128,7 @@ function shapeMetricSeries(rows: MetricRow[], query: MetricQuery): MetricQueryRe
 
   return {
     name: query.name,
-    step: selectedStep,
+    step: usesRawData ? "raw" : selectedStep,
     agg: query.agg,
     truncated: false,
     series,

@@ -100,7 +100,7 @@ describe("metrics routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       name: "http.request.duration",
-      step: "1m",
+      step: "raw",
       agg: "avg",
       truncated: false,
       series: [
