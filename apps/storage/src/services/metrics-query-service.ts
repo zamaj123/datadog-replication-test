@@ -6,7 +6,7 @@ import type {
   MetricQueryResponse,
   MetricRow,
 } from "./metrics-query-types.js";
-import { autoSelectStep, stepToBucketMs } from "./step-selection.js";
+import { autoSelectStep, shouldUseRawData, stepToBucketMs } from "./step-selection.js";
 
 function isoToMs(timestamp: string): number {
   return new Date(timestamp).getTime();
@@ -22,6 +22,10 @@ function bucketTimestamp(timestampMs: number, bucketMs: number | null): number {
 
 function formatIso(timestampMs: number): string {
   return new Date(timestampMs).toISOString();
+}
+
+function isoToUnixNanos(timestamp: string): string {
+  return (BigInt(Date.parse(timestamp)) * 1_000_000n).toString();
 }
 
 function percentile(values: number[], percentileRank: number): number {
@@ -89,8 +93,9 @@ function labelValueForDimension(row: MetricRow, dimension: string): string {
 function shapeMetricSeries(rows: MetricRow[], query: MetricQuery): MetricQueryResponse {
   const startMs = Date.parse(query.start);
   const endMs = Date.parse(query.end);
+  const usesRawData = shouldUseRawData(startMs, endMs, query.step);
   const selectedStep = query.step ?? autoSelectStep(startMs, endMs);
-  const bucketMs = stepToBucketMs(selectedStep);
+  const bucketMs = usesRawData ? null : stepToBucketMs(selectedStep);
   const seriesMap = new Map<string, { labels: Record<string, string>; points: Map<number, number[]> }>();
 
   for (const row of rows) {
@@ -123,7 +128,7 @@ function shapeMetricSeries(rows: MetricRow[], query: MetricQuery): MetricQueryRe
 
   return {
     name: query.name,
-    step: selectedStep,
+    step: usesRawData ? "raw" : selectedStep,
     agg: query.agg,
     truncated: false,
     series,
@@ -132,8 +137,8 @@ function shapeMetricSeries(rows: MetricRow[], query: MetricQuery): MetricQueryRe
 
 function buildWhereClause(query: MetricQuery): string {
   const clauses = [
-    `timestamp >= fromUnixTimestamp64Nano(${Date.parse(query.start) * 1_000_000})`,
-    `timestamp < fromUnixTimestamp64Nano(${Date.parse(query.end) * 1_000_000})`,
+    `timestamp >= fromUnixTimestamp64Nano(${isoToUnixNanos(query.start)})`,
+    `timestamp < fromUnixTimestamp64Nano(${isoToUnixNanos(query.end)})`,
     `name = ${sqlString(query.name)}`,
   ];
 
