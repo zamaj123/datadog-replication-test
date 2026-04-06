@@ -18,6 +18,16 @@ Define the minimum frontend milestone needed for a user to:
 
 This plan stays strictly within the frontend subsystem. It does not redesign the platform or expand into logs or traces.
 
+For this milestone, frontend planning assumes the fixed identity mapping from the cross-subsystem review guide:
+
+- `DD_SERVICE -> service_name`
+- `DD_ENV -> environment`
+- `DD_VERSION -> version`
+
+When `DD_VERSION` is absent, frontend should expect:
+
+- `version = ""`
+
 ---
 
 ## 2. Milestone Outcome
@@ -31,6 +41,8 @@ For this milestone, the frontend succeeds if a user can:
 5. view a service metrics page backed by real query responses
 
 The milestone is not a full observability surface. It is a minimum “real service metrics page” flow.
+
+It is specifically a metrics-backed service-page milestone, not a multi-signal milestone.
 
 ---
 
@@ -49,7 +61,7 @@ For this milestone, `/services` should be treated as the primary entry because i
 
 The user should be able to:
 
-1. choose an `environment`
+1. use the default all-environments scope or choose an `environment`
 2. set a recent `timeRange`
 3. see a list of emitting services for that range
 4. click the sample app row
@@ -65,6 +77,7 @@ This page should show:
 - service identity
 - last seen
 - summary metrics for the current time range
+- version breakdown for the emitted service
 - one small set of real charts or series views driven by canonical metric queries
 
 The page must feel like a usable service page even if the scope is metrics-only.
@@ -109,8 +122,12 @@ Minimum elements:
 - service header
 - environment and time context
 - summary stats row
-- metric selector or metric sections
-- one or more real metric panels
+- versions breakdown
+- Requests panel
+- p95 Latency panel
+- Errors panel
+- Endpoints section
+- Runtime Metrics section
 - empty-state boxes for not-yet-implemented areas
 
 No separate overview dashboard, logs page, trace page, or alert workflow is required for this milestone.
@@ -137,6 +154,8 @@ The frontend should not invent a separate “service search” endpoint for this
 
 If multiple services appear, the user still has a clear, contract-aligned discovery path: the services list.
 
+The frontend should not depend on `DD_SITE`, host inference, or metric-name inference to identify the service. Discovery is by canonical `service_name` and `environment` as returned from the query API.
+
 ---
 
 ## 6. Storage Endpoints the Frontend Must Rely On
@@ -155,6 +174,8 @@ This milestone should rely only on the canonical query API endpoints already def
   - for the real metric charts / series views
 - `GET /api/v1/environments`
   - for environment selection
+
+These are not optional for this milestone. The frontend milestone depends on all five canonical endpoints above.
 
 ### 6.2 Not Required for This Milestone
 
@@ -182,8 +203,9 @@ The services list page should:
    - `last_seen`
    - `request_rate_per_sec`
    - `error_rate`
-   - `p99_latency_ns`
-   - `log_count`
+   - `p95_latency_ns` if provided in the chosen service-list contract for this milestone, otherwise `p99_latency_ns` from the canonical services endpoint
+   - `log_count = 0`
+   - `active_alert_count = 0`
 
 ### 7.2 Service Metrics Page
 
@@ -197,13 +219,21 @@ The service page should render real data from:
 
 - `request_rate_per_sec`
 - `error_rate`
-- `p50_latency_ns`
 - `p95_latency_ns`
-- `p99_latency_ns`
 - `last_seen`
-- `active_alert_count` only if desired as a summary chip; it does not require alert UI
+- `version`
+- `log_count = 0`
+- `active_alert_count = 0`
 - metric `series[].labels`
 - metric `series[].points[]`
+
+For this milestone, the frontend should treat service summary semantics as metrics-backed:
+
+- `request_rate_per_sec` from `service.requests.count`
+- `error_rate` from `service.errors.count / service.requests.count`
+- `p95_latency_ns` from `service.request.duration`
+- `log_count = 0`
+- `active_alert_count = 0`
 
 ---
 
@@ -231,8 +261,8 @@ The environment selector must not silently filter to the wrong environment.
 
 Recommended behavior:
 
-- if there is exactly one available environment, preselect it
-- otherwise default to unscoped or require explicit selection
+- default to all environments
+- allow narrowing to one environment after the service list loads
 
 Risk:
 
@@ -259,7 +289,20 @@ Risk:
 
 - an empty metric selection makes the page look broken even though the service is real and metrics are available
 
-### 8.5 Step / Aggregation Defaults
+### 8.5 Version Default
+
+The service page should not hide data because a version breakdown defaults to a non-existent version.
+
+Recommended behavior:
+
+- show all versions by default
+- allow filtering or grouping by version after real data is visible
+
+Risk:
+
+- defaulting to one stale version can make the service page look empty even though the service is actively emitting
+
+### 8.6 Step / Aggregation Defaults
 
 The frontend should avoid defaults that over-filter or distort the first successful query.
 
@@ -272,7 +315,7 @@ Risk:
 
 - unusual defaults can cause confusing charts, especially for a first-run sample app
 
-### 8.6 Empty States
+### 8.7 Empty States
 
 The UI must distinguish between:
 
@@ -296,6 +339,7 @@ Minimum:
 - service name
 - environment
 - last seen
+- current version grouping/filter context
 - time range context
 
 ### 9.2 Summary Stats Row
@@ -304,9 +348,9 @@ Minimum:
 
 - request rate
 - error rate
-- p50 latency
 - p95 latency
-- p99 latency
+- log count shown as `0`
+- active alert count shown as `0`
 
 These should be derived from `GET /api/v1/services/:service_name/summary`.
 
@@ -314,12 +358,23 @@ These should be derived from `GET /api/v1/services/:service_name/summary`.
 
 Minimum:
 
-- metric name picker
-- at least one real metric chart or series panel
-- clear chart title
-- visible indication of the metric `name`, `agg`, and `step`
+- Requests panel
+- p95 Latency panel
+- Errors panel
+- clear chart titles
+- visible indication of the active metric `name`, `agg`, and `step`
 
-### 9.4 Placeholder Panels
+### 9.4 Versions / Endpoints / Runtime Sections
+
+Minimum:
+
+- versions breakdown
+- endpoints section
+- runtime metrics section
+
+These sections do not require a full product surface, but they should exist so the service page feels like a real milestone page rather than a single isolated chart.
+
+### 9.5 Placeholder Panels
 
 To make the page feel complete without expanding scope, the layout may include empty placeholder cards for:
 
@@ -329,7 +384,7 @@ To make the page feel complete without expanding scope, the layout may include e
 
 But only the implemented metrics panel(s) should show live data.
 
-### 9.5 Empty and Loading States
+### 9.6 Empty and Loading States
 
 Minimum:
 
@@ -346,7 +401,7 @@ Recommended end-to-end frontend flow:
 
 1. User opens `/services`
 2. User sees environment selector populated from `GET /api/v1/environments`
-3. User uses default recent time range
+3. User stays on the default all-environments scope and default recent time range
 4. User sees emitted sample app in `GET /api/v1/services`
 5. User clicks the sample app row
 6. User lands on `/services/:service_name`
@@ -354,7 +409,8 @@ Recommended end-to-end frontend flow:
    - summary from `GET /api/v1/services/:service_name/summary`
    - metric names from `GET /api/v1/metrics/names`
    - initial chart from `GET /api/v1/metrics/query`
-8. User can switch metrics and confirm live data is present
+8. User sees version breakdown plus Requests / p95 Latency / Errors / Endpoints / Runtime sections
+9. User can switch metrics and confirm live data is present
 
 This is the smallest frontend milestone that proves the pipeline ends in a usable service metrics page.
 
@@ -379,7 +435,8 @@ This milestone is frontend-ready when:
 
 - `/services` can show real emitting services
 - a user can select the sample app without knowing its name ahead of time
-- `/services/:service_name` renders summary metrics from real backend data
+- `/services/:service_name` renders metrics-backed summary values from real backend data
+- `/services/:service_name` shows a versions list or breakdown and allows version filtering or grouping
 - at least one metrics panel shows real `series[].points[]`
-- defaults do not hide the sample app by time range or environment mismatch
+- defaults do not hide the sample app by time range, environment mismatch, or stale version filtering
 - all requests use canonical contract params and fields
