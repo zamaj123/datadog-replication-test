@@ -23,11 +23,3 @@ export function emptyLogVolumeResponse(step: string): { step: string; buckets: [
 export function emptyTracesResponse(): { traces: []; next_cursor: null } {
   return { traces: [], next_cursor: null };
 }
-
-export function emptyServicesResponse(): { services: [] } {
-  return { services: [] };
-}
-
-export function emptyEnvironmentsResponse(): { environments: [] } {
-  return { environments: [] };
-}
