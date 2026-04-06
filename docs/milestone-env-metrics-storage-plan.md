@@ -98,6 +98,35 @@ Required behavior:
 
 For this milestone, correctness matters more than rollup optimization. A recent, service-scoped query over raw data is sufficient.
 
+### 3.6 Practical Implementation Notes
+
+The milestone implementation in `apps/storage` uses:
+
+- `GET /api/v1/environments` from distinct `environment` values in the `metrics` table
+- `GET /api/v1/services` from metrics-backed aggregation over raw `metrics` rows in the requested time range
+- `GET /api/v1/services/:service_name/summary` from metrics-backed aggregation over raw `metrics` rows in the requested time range
+
+For this milestone implementation:
+
+- `log_count` is returned as `0`
+- `active_alert_count` is returned as `0`
+
+This matches the milestone review scope and keeps the implementation within storage ownership while logs and alerts remain out of scope for this milestone.
+
+### 3.7 Review/Spec Conflict Notes
+
+Two review-driven areas required explicit handling against `INTERFACES.md`:
+
+1. Earlier review guidance described service latency mainly in terms of `p95_latency_ns`, but `INTERFACES.md` requires:
+   - `/services` `p99_latency_ns`
+   - `/services/:service_name/summary` `p50_latency_ns`, `p95_latency_ns`, and `p99_latency_ns`
+
+   The implementation follows `INTERFACES.md` for the endpoint field set while keeping the milestone metrics-backed derivation.
+
+2. The milestone review requires a versions breakdown on the service page, but `INTERFACES.md` does not explicitly define a canonical read path for version breakdown and does not explicitly allow `group_by=version` on `GET /api/v1/metrics/query`.
+
+   The implementation does not invent a new contract here. It preserves `version` in storage and leaves the version-breakdown read path blocked on contract clarification.
+
 ## 4. Schema, Index, And Aggregation Changes
 
 ### 4.1 Schema Changes

@@ -6,6 +6,7 @@ import { ClickHouseClient } from "../lib/clickhouse.js";
 import { HttpError, unauthorized } from "../lib/http-errors.js";
 import { registerMetricsRoutes } from "../routes/metrics.js";
 import { registerPlaceholderQueryRoutes } from "../routes/query-placeholders.js";
+import { registerServiceRoutes } from "../routes/services.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -59,6 +60,7 @@ export async function buildApp(env: StorageEnv): Promise<FastifyInstance> {
   });
 
   await registerMetricsRoutes(app);
+  await registerServiceRoutes(app);
   await registerPlaceholderQueryRoutes(app);
 
   return app;
