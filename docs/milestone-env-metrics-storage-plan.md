@@ -40,15 +40,18 @@ These endpoints are not optional for this milestone. The frontend milestone requ
 
 For this milestone, storage should treat the service page as a metrics-backed page, not a full multi-signal summary.
 
-Required service summary meanings:
+Required service-list and service-summary meanings:
 
 - `request_rate_per_sec` from `service.requests.count`
 - `error_rate` from `service.errors.count / service.requests.count`
-- `p95_latency_ns` from the `service.request.duration` histogram
-- `log_count = 0`
+- `/services` `p99_latency_ns` from the `service.request.duration` histogram
+- `/services/:service_name/summary` `p95_latency_ns` from the `service.request.duration` histogram
+- `/services` `log_count = 0`
+- `/services/:service_name/summary` `log_count = 0`
 - `active_alert_count = 0`
 
 These values must be computed at `service_name` + optional `environment` scope using the selected `[start, end)` time range.
+`active_alert_count` applies only to `GET /api/v1/services/:service_name/summary`, because it is not part of the `GET /api/v1/services` response contract in `INTERFACES.md`.
 
 ### 3.3 Raw Metrics Must Be Read From The Canonical Table
 
@@ -178,6 +181,7 @@ For storage, these decisions matter because:
 - `/services` and `/services/:service_name/summary` depend on the first three service metrics
 - the service detail page’s runtime section depends on the four runtime metrics
 - endpoint-level charts and grouping depend on the `endpoint` tag key remaining stable
+- version breakdown can be derived from the same emitted service metrics by grouping metric queries on `version`
 
 ## 6. Storage Assumptions From Ingestion
 
@@ -288,10 +292,21 @@ Storage should not plan around a metrics-only page that bypasses `/services` dis
 
 Storage assumes the service page will show a versions list or breakdown and allow filtering or grouping by version.
 
+For this milestone, the canonical data source for that breakdown is:
+
+- `GET /api/v1/metrics/query`
+
+scoped by:
+
+- `service_name`
+- optional `environment`
+- a selected metric from the required service metric set
+- `group_by=version`
+
 For storage, that means:
 
 - `version` must remain a top-level canonical stored field
-- metrics queries must preserve the ability to filter or group by `version`
+- metrics queries used by the service page must preserve the ability to group by `version` and return grouped labels for it
 - no storage-side collapsing of version values should be introduced for milestone reads
 
 ## 8. Milestone Storage Work Items
@@ -301,10 +316,11 @@ For storage, that means:
 Before any milestone polish, storage should prove:
 
 - `GET /api/v1/environments` returns the sample app environment
-- `GET /api/v1/services` returns the sample app service
+- `GET /api/v1/services` returns the sample app service with contract fields including `p99_latency_ns` and without `active_alert_count`
 - `GET /api/v1/services/:service_name/summary` returns the metrics-backed summary fields for the sample app
 - `GET /api/v1/metrics/names` returns at least one real metric name for the sample app scope
 - `GET /api/v1/metrics/query` returns at least one real series for that same scope
+- `GET /api/v1/metrics/query` grouped by `version` returns the data needed for the service-page versions breakdown
 
 This is the first storage-side checkpoint for milestone success.
 
@@ -332,14 +348,15 @@ Do not make these a milestone prerequisite:
 Storage is ready for the milestone when it can demonstrate all of the following against real sample-app emissions:
 
 1. `GET /api/v1/environments` returns the emitted environment
-2. `GET /api/v1/services` returns the emitted service with metrics-backed values
+2. `GET /api/v1/services` returns the emitted service with contract fields including `request_rate_per_sec`, `error_rate`, `p99_latency_ns`, and `log_count = 0`
 3. `GET /api/v1/services/:service_name/summary` returns `request_rate_per_sec`, `error_rate`, `p95_latency_ns`, `log_count = 0`, and `active_alert_count = 0` for the selected scope
 4. `GET /api/v1/metrics/names?service_name=<sample>&environment=<env>` returns non-empty names
 5. `GET /api/v1/metrics/query` for one returned name and a recent time range returns non-empty series
-6. the same storage instance is reading the same ClickHouse database ingestion writes to
-7. the query path does not exclude rows due to stale timestamps, mismatched `service_name`, mismatched `environment`, incorrect `version` grouping/filtering behavior, or incorrect tag filters
+6. `GET /api/v1/metrics/query` with `group_by=version` returns the data needed for the service-page versions breakdown
+7. the same storage instance is reading the same ClickHouse database ingestion writes to
+8. the query path does not exclude rows due to stale timestamps, mismatched `service_name`, mismatched `environment`, incorrect `version` grouping behavior, or incorrect tag filters
 
 ## 10. Open Issues
 
 - The exact ClickHouse query shape for deriving `p95_latency_ns` from the exploded `service.request.duration` histogram rows should be fixed during implementation and validated against the canonical histogram write format from `INTERFACES.md`.
-- `INTERFACES.md` still defines `p99_latency_ns` on `/services` and `p50`/`p95`/`p99` on `/services/:service_name/summary`; this milestone plan narrows implementation expectations to the reviewer-approved metrics-backed minimum, but the final implementation must remain contract-consistent for any fields exposed at runtime.
+- The exact query shape for deriving grouped version breakdowns from canonical metrics rows should be fixed during implementation and validated against the milestone’s required `version` behavior.
