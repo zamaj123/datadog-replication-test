@@ -212,4 +212,8 @@ Prospective review based on standard observability platform patterns. Superseded
   - required metrics are `service.requests.count`, `service.errors.count`, `service.request.duration`, and the four runtime metrics
   - required routes are `/services` and `/services/:service_name`
   - service-summary semantics are metrics-backed for this milestone, with `log_count = 0` and `active_alert_count = 0`
-- The remaining work is for ingestion, storage, and frontend to update their milestone plans to match those fixed decisions rather than continuing to drift on endpoint scope or summary semantics.
+- Second-pass review of the updated milestone plans found narrower remaining issues:
+  - `/services` latency is still drifting to `p95_latency_ns` instead of the current contract’s `p99_latency_ns`
+  - `active_alert_count` is still being treated as a `/services` list field even though it is not part of that response contract
+  - the versions breakdown still has no explicit canonical data source in the current service endpoints
+  - the storage milestone plan still documents a service-endpoint contract caveat instead of fully resolving it

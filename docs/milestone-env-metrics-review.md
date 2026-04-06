@@ -205,11 +205,51 @@ All three plans should preserve:
 
 No inference layer should be introduced.
 
+## Second-Pass Review Findings
+
+After the subsystem plans were updated, these remaining issues still need to be cleared.
+
+### 1. `/services` list latency is still not aligned to `INTERFACES.md`.
+
+`INTERFACES.md` defines `GET /api/v1/services` with:
+
+- `p99_latency_ns`
+
+The updated frontend and storage milestone plans still steer the milestone toward:
+
+- `p95_latency_ns`
+
+That is still a contract mismatch on the services-list response. The plans should stop treating `/services` latency as flexible for this milestone unless `INTERFACES.md` is updated separately.
+
+### 2. `active_alert_count` is still being treated as a `/services` list field even though it is not in the contract.
+
+For this milestone, `active_alert_count = 0` is a reasonable service-page simplification, but `INTERFACES.md` does not include `active_alert_count` on `GET /api/v1/services`.
+
+So the milestone plans should not require or expect `active_alert_count` in the `/services` list response.
+
+### 3. The versions breakdown still has no explicit canonical data source.
+
+The milestone now requires the service page to show a versions list or breakdown, but `INTERFACES.md` does not provide `version` directly in:
+
+- `GET /api/v1/services`
+- `GET /api/v1/services/:service_name/summary`
+
+That means the plans still need one contract-consistent answer for how the frontend gets version-breakdown data during this milestone using existing canonical endpoints.
+
+### 4. The storage plan still acknowledges a contract gap instead of fully resolving it.
+
+The updated storage milestone plan now commits to the required endpoint set, which is good, but it still keeps an open warning that the milestone narrows expectations away from the full `INTERFACES.md` service endpoint fields.
+
+That means the service-endpoint part of the milestone is still not fully clean. The plans should either:
+
+- stay strictly within the current service endpoint contract, or
+- propose the specific contract amendment separately before implementation
+
 ## Conclusion
 
 The milestone is achievable with metrics only under the clarified scope above.
 
-The next step for the subsystem agents is not to redesign anything further. It is to update their milestone implementation plans so they all reflect the same fixed decisions:
+The next step for the subsystem agents is still not a broader redesign. It is to clear the remaining service-endpoint contract issues while preserving the fixed milestone decisions:
 
 - canonical DD-style env mapping
 - canonical `/v1/metrics` emission
@@ -217,3 +257,10 @@ The next step for the subsystem agents is not to redesign anything further. It i
 - one required dimension set
 - required `/services` and `/services/:service_name` flow
 - metrics-backed service summary with `log_count = 0` and `active_alert_count = 0`
+
+The remaining cleanup is narrower now:
+
+- align `/services` latency to the current contract
+- stop expecting `active_alert_count` on the services list
+- define a contract-consistent source for the versions breakdown
+- remove the remaining service-endpoint ambiguity from the storage plan
