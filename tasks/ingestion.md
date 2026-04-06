@@ -43,11 +43,16 @@ Must define contracts with storage before deep implementation.
   - Initial Vitest coverage added for auth, normalization, and metrics pipeline behavior
 - [x] Implementation review issues addressed for ingestion
   - Real ClickHouse config loading and metrics writer wiring added for the metrics path
-  - `/v1/logs` and `/v1/traces` routes registered so canonical ingestion endpoints no longer 404
-  - Tests updated to cover route registration and non-noop writer integration
- - [x] Deterministic metrics roundtrip smoke validation added
-   - `npm run smoke:metrics` now writes a unique metric through ingestion, verifies the row in ClickHouse, and verifies storage can read it back
-   - Supporting unit coverage added for the smoke-case builder so the runtime probe uses stable service names, metric names, and time bounds
+ - `/v1/logs` and `/v1/traces` routes registered so canonical ingestion endpoints no longer 404
+ - Tests updated to cover route registration and non-noop writer integration
+- [x] Deterministic metrics roundtrip smoke validation added
+  - `npm run smoke:metrics` now writes a unique metric through ingestion, verifies the row in ClickHouse, and verifies storage can read it back
+  - Supporting unit coverage added for the smoke-case builder so the runtime probe uses stable service names, metric names, and time bounds
+- [x] Milestone env-based metrics ingestion plan written to `docs/milestone-env-metrics-ingestion-plan.md`
+  - Documents how a separate sample app should emit metrics into the canonical `/v1/metrics` ingestion API
+  - Defines the ingestion-side mapping for `DD_API_KEY`, `DD_SITE`, and `DD_ENV`-style sample-app inputs
+  - Keeps Datadog-like naming translation at the sample-app / emitter boundary and preserves canonical ingestion-to-storage fields
+  - Records the minimum ingestion work and cross-subsystem assumptions needed to show a real service metrics page for the sample app
 
 ### Blocked on
 - No ingestion-specific contract blockers remain for Phase 2 design work; `INTERFACES.md` is the authority for implementation.
@@ -57,4 +62,5 @@ Must define contracts with storage before deep implementation.
 - Add in-memory batching and flush interval behavior for ClickHouse writes
 - Expand test coverage for request-envelope failures and writer failure paths
 - End-to-end test with a Node.js OTel emitter and canonical row verification
- - Expand the smoke validation beyond metrics once logs and traces move beyond placeholder routes
+- Expand the smoke validation beyond metrics once logs and traces move beyond placeholder routes
+- Validate the milestone path with a separate sample app using DD-style env names mapped into the canonical metrics ingestion contract
