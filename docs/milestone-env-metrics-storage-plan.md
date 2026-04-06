@@ -11,14 +11,46 @@ This plan is storage-only. It does not redesign shared contracts in `INTERFACES.
 From the storage side, the milestone is complete when all of the following are true:
 
 1. metrics emitted by the sample app are persisted into the canonical `metrics` table using the canonical storage schema
-2. storage can discover that the service exists for the selected environment
-3. storage can return metric names for that service/environment
-4. storage can return real metric series for that service/environment over a recent time range
-5. the site can use those responses to render a service-scoped metrics page for the sample app
+2. storage can list environments that include the sample app
+3. storage can discover the sample app on `/services`
+4. storage can return a metrics-backed service summary on `/services/:service_name`
+5. storage can return metric names for that service/environment
+6. storage can return real metric series for that service/environment over a recent time range
+7. the site can use those responses to render the required `/services` and `/services/:service_name` flow for the sample app
 
 ## 3. Required Storage Behavior
 
-### 3.1 Raw Metrics Must Be Read From The Canonical Table
+### 3.1 Canonical Milestone Endpoint Set Must Work
+
+For this milestone, storage must back these canonical endpoints with real ClickHouse data:
+
+- `GET /api/v1/environments`
+- `GET /api/v1/services`
+- `GET /api/v1/services/:service_name/summary`
+- `GET /api/v1/metrics/names`
+- `GET /api/v1/metrics/query`
+
+These endpoints are not optional for this milestone. The frontend milestone requires users to:
+
+1. land on `/services`
+2. discover the emitted service there
+3. click through to `/services/:service_name`
+
+### 3.2 Service Discovery And Summary Must Be Metrics-Backed
+
+For this milestone, storage should treat the service page as a metrics-backed page, not a full multi-signal summary.
+
+Required service summary meanings:
+
+- `request_rate_per_sec` from `service.requests.count`
+- `error_rate` from `service.errors.count / service.requests.count`
+- `p95_latency_ns` from the `service.request.duration` histogram
+- `log_count = 0`
+- `active_alert_count = 0`
+
+These values must be computed at `service_name` + optional `environment` scope using the selected `[start, end)` time range.
+
+### 3.3 Raw Metrics Must Be Read From The Canonical Table
 
 For this milestone, storage must read the sample app’s metrics from the canonical raw `metrics` table in ClickHouse.
 
@@ -32,7 +64,7 @@ Required behavior:
 
 This is enough to make recent emitted metrics visible without depending on logs, traces, or alert state.
 
-### 3.2 Metric Name Discovery Must Work
+### 3.4 Metric Name Discovery Must Work
 
 `GET /api/v1/metrics/names` must work against real ClickHouse data.
 
@@ -45,7 +77,7 @@ Required behavior:
 
 This endpoint is the simplest proof that storage can see the sample app’s emitted metrics at all.
 
-### 3.3 Metric Query Must Work For Recent Sample-App Data
+### 3.5 Metric Query Must Work For Recent Sample-App Data
 
 `GET /api/v1/metrics/query` must work against real ClickHouse data.
 
@@ -83,6 +115,7 @@ The current canonical `metrics` table already stores the fields storage needs:
 That is sufficient for:
 
 - service/environment discovery from metrics
+- metrics-backed service summary values for this milestone
 - metric name discovery
 - service-scoped metric series queries
 
@@ -115,30 +148,36 @@ For the milestone:
 
 Storage should not introduce new aggregation semantics for this milestone. It should keep the canonical `agg` behavior from `INTERFACES.md`.
 
-## 5. Minimum Endpoints For This Milestone
+## 5. Required Milestone Metric Set And Derived Values
 
-### 5.1 Must Work
+Storage assumes the sample app emits this minimum metric set:
 
-These endpoints must work with real ClickHouse data:
+- `service.requests.count`
+- `service.errors.count`
+- `service.request.duration`
+- `runtime.cpu.usage`
+- `runtime.memory.usage`
+- `runtime.heap.used`
+- `runtime.event_loop.delay`
 
-- `GET /api/v1/metrics/names`
-- `GET /api/v1/metrics/query`
+Storage also assumes these milestone dimensions are available where applicable:
 
-Those are the minimum endpoints required for a service-scoped metrics view where the selected service and environment are already known.
+- `endpoint`
+- `http.method`
+- `http.status_code`
+- `version`
+- `environment`
+- `service_name`
 
-### 5.2 Likely Needed For A Real Service Page
+The milestone endpoint tag key is:
 
-If the frontend milestone includes actual `/services` navigation or a `/services/:service_name` page header, these endpoints should also work:
+- `endpoint`
 
-- `GET /api/v1/services`
-- `GET /api/v1/services/:service_name/summary`
+For storage, these decisions matter because:
 
-Storage can support the service page milestone in one of two ways:
-
-1. Preferred: implement these canonical service endpoints using metrics-backed service discovery and service summary fields where the needed values are derivable from emitted metrics.
-2. Minimum fallback for the milestone: frontend navigates with a known `service_name` and `environment`, and the service metrics page relies on metrics endpoints only.
-
-Because this plan is metrics-only, logs- and traces-derived service summary values are not a milestone dependency here.
+- `/services` and `/services/:service_name/summary` depend on the first three service metrics
+- the service detail page’s runtime section depends on the four runtime metrics
+- endpoint-level charts and grouping depend on the `endpoint` tag key remaining stable
 
 ## 6. Storage Assumptions From Ingestion
 
@@ -166,6 +205,15 @@ for every metric row.
 
 For a sample app configured through env vars, storage assumes ingestion maps the app’s emitted environment into canonical `environment` and does not write empty strings for either required field.
 
+Storage also assumes these env mappings are fixed for the milestone:
+
+- `DD_SERVICE -> service_name`
+- `DD_ENV -> environment`
+- `DD_VERSION -> version`
+- missing `DD_VERSION -> version = ""`
+
+Storage should not infer `service_name` or `version` from hostnames, metric names, or `DD_SITE`.
+
 ### 6.3 Metric Names Are Stable And Queryable
 
 Storage assumes ingestion writes canonical metric names that the frontend can reuse directly in `GET /api/v1/metrics/query`.
@@ -175,6 +223,8 @@ That means:
 - no storage-side rename layer
 - no metrics-only alias translation
 - the names returned by `GET /api/v1/metrics/names` are the names accepted by `GET /api/v1/metrics/query`
+
+Storage also assumes the sample app emits through the existing canonical `POST /v1/metrics` JSON contract, not through a Datadog-vendor-specific ingestion protocol.
 
 ### 6.4 Timestamps Are Recent
 
@@ -200,13 +250,13 @@ If ingestion and storage point at different databases or hosts, storage cannot m
 Storage assumes frontend will scope requests using:
 
 - `service_name`
-- optional `environment`
+- optional `environment`, defaulting to all environments for the milestone
 
 and will preserve those canonical names in all metrics requests.
 
 ### 7.2 Default Time Range Must Include Fresh Data
 
-Storage assumes the frontend default time range is recent and intended for live sample-app data.
+Storage assumes the frontend default time range is the last 1 hour and intended for live sample-app data.
 
 For this milestone, frontend should not expect storage to surface old fixture timestamps in a recent default range. Storage will correctly return no data when the selected `[start, end)` window excludes the emitted rows.
 
@@ -222,14 +272,27 @@ and then pass one of those returned names into:
 
 using the same `service_name` and `environment` scope.
 
-### 7.4 Service Page Routing Must Provide A Real Service Context
+### 7.4 Service Flow Is Required
 
-If the milestone is framed as a real service page, storage assumes frontend has one of these behaviors:
+Storage assumes frontend will implement the required milestone route flow:
 
-1. fetch a real service from `GET /api/v1/services` and navigate using that `service_name`, or
-2. otherwise enter the page with an explicitly chosen `service_name` and optional `environment`
+1. fetch `/services`
+2. display the emitted sample-app service there
+3. navigate to `/services/:service_name`
+4. fetch `/services/:service_name/summary`
+5. fetch `metrics/names` and `metrics/query` within the same service/environment scope
 
-Storage should not be expected to infer the selected service from metric names alone.
+Storage should not plan around a metrics-only page that bypasses `/services` discovery for this milestone.
+
+### 7.5 Version Breakdown Is Required On The Service Page
+
+Storage assumes the service page will show a versions list or breakdown and allow filtering or grouping by version.
+
+For storage, that means:
+
+- `version` must remain a top-level canonical stored field
+- metrics queries must preserve the ability to filter or group by `version`
+- no storage-side collapsing of version values should be introduced for milestone reads
 
 ## 8. Milestone Storage Work Items
 
@@ -237,6 +300,9 @@ Storage should not be expected to infer the selected service from metric names a
 
 Before any milestone polish, storage should prove:
 
+- `GET /api/v1/environments` returns the sample app environment
+- `GET /api/v1/services` returns the sample app service
+- `GET /api/v1/services/:service_name/summary` returns the metrics-backed summary fields for the sample app
 - `GET /api/v1/metrics/names` returns at least one real metric name for the sample app scope
 - `GET /api/v1/metrics/query` returns at least one real series for that same scope
 
@@ -265,12 +331,15 @@ Do not make these a milestone prerequisite:
 
 Storage is ready for the milestone when it can demonstrate all of the following against real sample-app emissions:
 
-1. `GET /api/v1/metrics/names?service_name=<sample>&environment=<env>` returns non-empty names
-2. `GET /api/v1/metrics/query` for one returned name and a recent time range returns non-empty series
-3. the same storage instance is reading the same ClickHouse database ingestion writes to
-4. the query path does not exclude the row due to stale timestamps, mismatched `service_name`, mismatched `environment`, or incorrect tag filters
+1. `GET /api/v1/environments` returns the emitted environment
+2. `GET /api/v1/services` returns the emitted service with metrics-backed values
+3. `GET /api/v1/services/:service_name/summary` returns `request_rate_per_sec`, `error_rate`, `p95_latency_ns`, `log_count = 0`, and `active_alert_count = 0` for the selected scope
+4. `GET /api/v1/metrics/names?service_name=<sample>&environment=<env>` returns non-empty names
+5. `GET /api/v1/metrics/query` for one returned name and a recent time range returns non-empty series
+6. the same storage instance is reading the same ClickHouse database ingestion writes to
+7. the query path does not exclude rows due to stale timestamps, mismatched `service_name`, mismatched `environment`, incorrect `version` grouping/filtering behavior, or incorrect tag filters
 
 ## 10. Open Issues
 
-- If the milestone requires the site to discover services dynamically from a service list page, storage may need `GET /api/v1/services` earlier than the current metrics-only UI path.
-- If the milestone requires the service detail header to show canonical summary fields from `GET /api/v1/services/:service_name/summary`, the exact source metrics for `request_rate_per_sec`, `error_rate`, and latency percentiles must be confirmed before implementation. That is a milestone coordination question, not a storage contract change.
+- The exact ClickHouse query shape for deriving `p95_latency_ns` from the exploded `service.request.duration` histogram rows should be fixed during implementation and validated against the canonical histogram write format from `INTERFACES.md`.
+- `INTERFACES.md` still defines `p99_latency_ns` on `/services` and `p50`/`p95`/`p99` on `/services/:service_name/summary`; this milestone plan narrows implementation expectations to the reviewer-approved metrics-backed minimum, but the final implementation must remain contract-consistent for any fields exposed at runtime.
