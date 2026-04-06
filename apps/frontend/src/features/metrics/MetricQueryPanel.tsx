@@ -112,6 +112,14 @@ export function MetricQueryPanel(props: MetricQueryPanelProps) {
             />
           </label>
           <label>
+            <span>group_by</span>
+            <input
+              value={request.group_by ?? ""}
+              onChange={(event) => setRequest({ ...request, group_by: event.target.value || undefined })}
+              placeholder="service_name,http.method"
+            />
+          </label>
+          <label>
             <span>step</span>
             <input
               value={request.step ?? ""}

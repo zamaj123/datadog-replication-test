@@ -33,4 +33,4 @@ Must depend on documented query APIs and shared field names.
 8. Service summaries come from `GET /api/v1/services` and `GET /api/v1/services/:service_name/summary`
 
 ## Status
-Initial frontend scaffold created in `apps/frontend` with bootstrap, metric names fetch, and metric query rendering aligned to `INTERFACES.md`.
+Initial frontend scaffold created in `apps/frontend` with bootstrap, metric names fetch, and metric query rendering aligned to `INTERFACES.md`, including grouped metric query coverage via `group_by`.
