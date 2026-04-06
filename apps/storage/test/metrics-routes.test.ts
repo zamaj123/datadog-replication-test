@@ -6,7 +6,12 @@ describe("metrics routes", () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
 
   beforeEach(async () => {
-    app = await buildApp({ port: 3000, apiKey: "test-key", clickhouse: null });
+    app = await buildApp({
+      port: 3000,
+      apiKey: "test-key",
+      frontendDevOrigin: "http://localhost:5173",
+      clickhouse: null,
+    });
   });
 
   afterEach(async () => {
@@ -66,6 +71,41 @@ describe("metrics routes", () => {
       error: "unauthorized",
       code: "unauthorized",
     });
+  });
+
+  it("handles cors preflight for the frontend dev origin", async () => {
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/api/v1/metrics/query",
+      headers: {
+        origin: "http://localhost:5173",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "x-api-key",
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    expect(response.headers["access-control-allow-headers"]).toBe("X-Api-Key, Content-Type");
+    expect(response.headers["access-control-allow-methods"]).toBe("GET, OPTIONS");
+    expect(response.headers.vary).toBe("Origin");
+  });
+
+  it("returns cors headers for requests from the frontend dev origin", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/metrics/names",
+      headers: {
+        origin: "http://localhost:5173",
+        "x-api-key": "test-key",
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    expect(response.headers["access-control-allow-headers"]).toBe("X-Api-Key, Content-Type");
+    expect(response.headers["access-control-allow-methods"]).toBe("GET, OPTIONS");
+    expect(response.headers.vary).toBe("Origin");
   });
 
   it("returns a contract-shaped metrics response when clickhouse is configured", async () => {

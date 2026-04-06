@@ -1,6 +1,7 @@
 export type StorageEnv = {
   port: number;
   apiKey: string;
+  frontendDevOrigin: string;
   clickhouse:
     | {
         host: string;
@@ -25,6 +26,8 @@ export function getEnv(env: NodeJS.ProcessEnv = process.env): StorageEnv {
   if (!apiKey) {
     throw new Error("INGESTION_API_KEY is required");
   }
+
+  const frontendDevOrigin = env.FRONTEND_DEV_ORIGIN ?? "http://localhost:5173";
 
   const clickhouseHost = env.CLICKHOUSE_HOST;
   const clickhousePortValue = env.CLICKHOUSE_PORT;
@@ -63,5 +66,5 @@ export function getEnv(env: NodeJS.ProcessEnv = process.env): StorageEnv {
     };
   }
 
-  return { port, apiKey, clickhouse };
+  return { port, apiKey, frontendDevOrigin, clickhouse };
 }
