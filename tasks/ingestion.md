@@ -54,6 +54,8 @@ Must define contracts with storage before deep implementation.
   - Keeps Datadog-like naming translation at the sample-app / emitter boundary and preserves canonical ingestion-to-storage fields
   - Aligns the milestone metric set to `service.requests.count`, `service.errors.count`, `service.request.duration`, and the required runtime metrics
   - Records `endpoint` as the required endpoint dimension key for milestone traffic
+  - Preserves `version` on milestone metrics so downstream version breakdown can come from canonical metrics queries
+  - Aligns milestone downstream assumptions to the current service-endpoint contract (`/services` uses `p99_latency_ns` and does not include `active_alert_count`)
   - Records the minimum ingestion work and cross-subsystem assumptions needed to show a real service metrics page for the sample app
 
 ### Blocked on

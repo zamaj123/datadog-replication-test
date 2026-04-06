@@ -185,6 +185,8 @@ The milestone assumes these dimensions are available where applicable:
 
 For this milestone, the endpoint tag key is `endpoint`.
 
+The sample app should emit `version` through the canonical identity mapping on every milestone metric so downstream consumers can group by version using existing canonical query endpoints.
+
 Ingestion should reject:
 
 - missing or invalid `X-Api-Key`
@@ -241,6 +243,13 @@ For the milestone to succeed, ingestion needs storage to provide:
 - metric names discoverable through `GET /api/v1/metrics/names`
 - metric series queryable through `GET /api/v1/metrics/query`
 - service and environment filters honoring canonical `service_name` and `environment`
+- `/api/v1/services` staying aligned to `INTERFACES.md`, including:
+  - `p99_latency_ns` for list latency
+  - no `active_alert_count` field on the services list response
+- `/api/v1/services/:service_name/summary` staying aligned to `INTERFACES.md`, including:
+  - `active_alert_count`
+  - `p95_latency_ns` and `p99_latency_ns`
+- version-breakdown data being sourced through existing canonical metrics queries, not a new version-specific endpoint
 
 Ingestion assumes storage does not require any non-canonical fields beyond the metrics schema in `INTERFACES.md`.
 
@@ -254,6 +263,10 @@ For the milestone to succeed, ingestion needs frontend to provide:
 - environment selection or filtering using canonical `environment`
 - metric selection from names actually returned by storage
 - a time range that includes the newly emitted metrics
+- `/services` list behavior aligned to the current contract:
+  - show `p99_latency_ns` for latency
+  - do not expect `active_alert_count` on the services list
+- versions breakdown on `/services/:service_name` sourced via existing canonical endpoints, using metrics grouped or filtered by `version`
 
 Ingestion does not need any frontend-specific payload changes for this milestone.
 
@@ -278,6 +291,7 @@ The key proof points for ingestion are:
 - `DD_VERSION` became canonical `version`, defaulting to `""` when absent
 - the required service and runtime metrics were accepted without renaming
 - the `endpoint` dimension was preserved as `endpoint`
+- the `version` field was preserved on milestone metrics so downstream version grouping is possible through canonical query APIs
 - the metric was written under canonical storage fields, not Datadog field names
 
 ---
