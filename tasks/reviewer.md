@@ -217,3 +217,6 @@ Prospective review based on standard observability platform patterns. Superseded
   - `active_alert_count` is still being treated as a `/services` list field even though it is not part of that response contract
   - the versions breakdown still has no explicit canonical data source in the current service endpoints
   - the storage milestone plan still documents a service-endpoint contract caveat instead of fully resolving it
+- Third-pass review of the latest milestone plan updates found only two remaining issues:
+  - the storage milestone plan still under-specifies the full canonical latency field set for `GET /api/v1/services/:service_name/summary`
+  - the versions-breakdown approach still depends on an unstated contract assumption that `GET /api/v1/metrics/query` supports `group_by=version`

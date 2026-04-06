@@ -245,6 +245,36 @@ That means the service-endpoint part of the milestone is still not fully clean. 
 - stay strictly within the current service endpoint contract, or
 - propose the specific contract amendment separately before implementation
 
+## Third-Pass Review Findings
+
+After the latest plan updates, only two substantive issues still remain.
+
+### 1. The storage plan still under-specifies the canonical service-summary latency fields.
+
+`INTERFACES.md` defines `GET /api/v1/services/:service_name/summary` with:
+
+- `p50_latency_ns`
+- `p95_latency_ns`
+- `p99_latency_ns`
+
+The updated storage milestone plan now treats the endpoint as canonical, but it still only defines `p95_latency_ns` as part of the metrics-backed summary behavior.
+
+That leaves the endpoint plan incomplete. Even if the frontend only displays p95 for this milestone, the storage plan should account for the full summary latency field set required by the current contract.
+
+### 2. The versions-breakdown plan still depends on an unstated contract assumption about `group_by=version`.
+
+The frontend and storage plans now align with each other by sourcing the versions breakdown from:
+
+- `GET /api/v1/metrics/query`
+- `group_by=version`
+
+That is a sensible implementation direction, but `INTERFACES.md` does not clearly state that `version` is a supported grouping dimension for metric queries.
+
+So this is still a contract gap unless one of these happens:
+
+- the milestone plans stay within a contract-consistent source already explicitly allowed, or
+- `INTERFACES.md` is amended to make `version` grouping explicit before implementation
+
 ## Conclusion
 
 The milestone is achievable with metrics only under the clarified scope above.
@@ -264,3 +294,8 @@ The remaining cleanup is narrower now:
 - stop expecting `active_alert_count` on the services list
 - define a contract-consistent source for the versions breakdown
 - remove the remaining service-endpoint ambiguity from the storage plan
+
+After the third pass, the final remaining cleanup is narrower still:
+
+- make the storage plan account for the full canonical latency field set on `GET /api/v1/services/:service_name/summary`
+- either make `group_by=version` explicit in `INTERFACES.md` or stop depending on it as an assumed contract feature
