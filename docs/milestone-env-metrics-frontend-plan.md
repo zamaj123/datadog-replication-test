@@ -213,7 +213,7 @@ The service page should:
 1. call `GET /api/v1/services/:service_name/summary?start=...&end=...&environment=...`
 2. call `GET /api/v1/metrics/names?service_name=...&environment=...`
 3. call `GET /api/v1/metrics/query?...` for the visible metric panels
-4. call `GET /api/v1/metrics/query?...&group_by=version` for the versions breakdown
+4. render the versions section only from a contract source explicitly allowed by `INTERFACES.md`
 
 The service page should render real data from:
 
@@ -226,14 +226,13 @@ The service page should render real data from:
 - metric `series[].labels`
 - metric `series[].points[]`
 
-The versions breakdown must come from the canonical metrics query response, not from a separate service-summary field. For this milestone, the frontend should:
+The versions breakdown still has a contract dependency. `INTERFACES.md` does not currently state that metric queries support grouping by `version`, and the service endpoints do not expose version buckets directly. Because this plan must not implement against a guess, frontend should treat the versions section as:
 
-- issue a metrics query scoped by `service_name`, `environment`, `start`, and `end`
-- include `group_by=version`
-- read the version bucket from `series[].labels.version`
-- treat missing labels as the unversioned bucket, consistent with `DD_VERSION` mapping to `version = ""`
+- required in the page layout for this milestone
+- populated only after `INTERFACES.md` explicitly allows a canonical source for version breakdown data
+- otherwise rendered as a clearly labeled placeholder or blocked state rather than using an assumed `group_by=version` behavior
 
-If the grouped metric query returns no `version` labels, the versions section should render an empty state rather than inventing a fallback contract.
+When that contract source is made explicit, missing version values should still be treated as the unversioned bucket, consistent with `DD_VERSION` mapping to `version = ""`.
 
 For this milestone, the frontend should treat service summary semantics as metrics-backed:
 
