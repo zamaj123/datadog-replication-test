@@ -77,7 +77,7 @@ This page should show:
 - service identity
 - last seen
 - summary metrics for the current time range
-- version breakdown for the emitted service
+- version breakdown for the emitted service, derived from canonical metric query labels
 - one small set of real charts or series views driven by canonical metric queries
 
 The page must feel like a usable service page even if the scope is metrics-only.
@@ -203,9 +203,8 @@ The services list page should:
    - `last_seen`
    - `request_rate_per_sec`
    - `error_rate`
-   - `p95_latency_ns` if provided in the chosen service-list contract for this milestone, otherwise `p99_latency_ns` from the canonical services endpoint
-   - `log_count = 0`
-   - `active_alert_count = 0`
+   - `p99_latency_ns`
+   - `log_count`
 
 ### 7.2 Service Metrics Page
 
@@ -213,7 +212,8 @@ The service page should:
 
 1. call `GET /api/v1/services/:service_name/summary?start=...&end=...&environment=...`
 2. call `GET /api/v1/metrics/names?service_name=...&environment=...`
-3. call `GET /api/v1/metrics/query?...`
+3. call `GET /api/v1/metrics/query?...` for the visible metric panels
+4. call `GET /api/v1/metrics/query?...&group_by=version` for the versions breakdown
 
 The service page should render real data from:
 
@@ -221,11 +221,19 @@ The service page should render real data from:
 - `error_rate`
 - `p95_latency_ns`
 - `last_seen`
-- `version`
 - `log_count = 0`
 - `active_alert_count = 0`
 - metric `series[].labels`
 - metric `series[].points[]`
+
+The versions breakdown must come from the canonical metrics query response, not from a separate service-summary field. For this milestone, the frontend should:
+
+- issue a metrics query scoped by `service_name`, `environment`, `start`, and `end`
+- include `group_by=version`
+- read the version bucket from `series[].labels.version`
+- treat missing labels as the unversioned bucket, consistent with `DD_VERSION` mapping to `version = ""`
+
+If the grouped metric query returns no `version` labels, the versions section should render an empty state rather than inventing a fallback contract.
 
 For this milestone, the frontend should treat service summary semantics as metrics-backed:
 
@@ -267,6 +275,7 @@ Recommended behavior:
 Risk:
 
 - defaulting to a hard-coded environment such as `production` or `demo` can hide the emitted sample app entirely
+- silently replacing the all-environments state with an arbitrary single environment can hide the emitted sample app even when the environment list loaded correctly
 
 ### 8.3 Service Filter Carryover
 
