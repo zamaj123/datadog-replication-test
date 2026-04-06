@@ -73,7 +73,7 @@ describe("metrics routes", () => {
       queryJsonEachRow: async <T>() =>
         [
           {
-            timestamp_ms: Date.parse("2026-04-02T09:00:00.000Z"),
+            timestamp_ms: Date.parse("2026-04-02T09:00:05.000Z"),
             service_name: "api-server",
             environment: "production",
             name: "http.request.duration",
@@ -81,7 +81,7 @@ describe("metrics routes", () => {
             value: 143.2,
           },
           {
-            timestamp_ms: Date.parse("2026-04-02T09:01:00.000Z"),
+            timestamp_ms: Date.parse("2026-04-02T09:00:45.000Z"),
             service_name: "api-server",
             environment: "production",
             name: "http.request.duration",
@@ -93,7 +93,7 @@ describe("metrics routes", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/v1/metrics/query?start=2026-04-02T08:00:00Z&end=2026-04-02T12:00:00Z&name=http.request.duration&service_name=api-server&environment=production&group_by=http.method&agg=avg",
+      url: "/api/v1/metrics/query?start=2026-04-02T08:00:00Z&end=2026-04-02T10:00:00Z&name=http.request.duration&service_name=api-server&environment=production&group_by=http.method&agg=avg",
       headers: { "x-api-key": "test-key" },
     });
 
@@ -107,8 +107,8 @@ describe("metrics routes", () => {
         {
           labels: { "http.method": "POST" },
           points: [
-            { timestamp: "2026-04-02T09:00:00.000Z", value: 143.2 },
-            { timestamp: "2026-04-02T09:01:00.000Z", value: 156.8 },
+            { timestamp: "2026-04-02T09:00:05.000Z", value: 143.2 },
+            { timestamp: "2026-04-02T09:00:45.000Z", value: 156.8 },
           ],
         },
       ],

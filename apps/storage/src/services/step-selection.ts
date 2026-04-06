@@ -19,6 +19,14 @@ export function autoSelectStep(startMs: number, endMs: number): string {
   return "1d";
 }
 
+export function shouldUseRawData(startMs: number, endMs: number, explicitStep?: string): boolean {
+  if (explicitStep) {
+    return false;
+  }
+
+  return endMs - startMs <= 3 * MS_PER_HOUR;
+}
+
 export function stepToBucketMs(step: string): number | null {
   switch (step) {
     case "1m":
