@@ -185,7 +185,7 @@ The milestone assumes these dimensions are available where applicable:
 
 For this milestone, the endpoint tag key is `endpoint`.
 
-The sample app should emit `version` through the canonical identity mapping on every milestone metric so downstream consumers can group by version using existing canonical query endpoints.
+The sample app should emit `version` through the canonical identity mapping on every milestone metric so downstream systems have canonical version data available without adding a second identity source.
 
 Ingestion should reject:
 
@@ -248,8 +248,9 @@ For the milestone to succeed, ingestion needs storage to provide:
   - no `active_alert_count` field on the services list response
 - `/api/v1/services/:service_name/summary` staying aligned to `INTERFACES.md`, including:
   - `active_alert_count`
+  - `p50_latency_ns`
   - `p95_latency_ns` and `p99_latency_ns`
-- version-breakdown data being sourced through existing canonical metrics queries, not a new version-specific endpoint
+- any version-breakdown implementation staying within explicitly supported canonical endpoints or being proposed as a contract amendment before implementation
 
 Ingestion assumes storage does not require any non-canonical fields beyond the metrics schema in `INTERFACES.md`.
 
@@ -266,7 +267,7 @@ For the milestone to succeed, ingestion needs frontend to provide:
 - `/services` list behavior aligned to the current contract:
   - show `p99_latency_ns` for latency
   - do not expect `active_alert_count` on the services list
-- versions breakdown on `/services/:service_name` sourced via existing canonical endpoints, using metrics grouped or filtered by `version`
+- versions breakdown on `/services/:service_name` must not depend on an unstated contract feature such as implicit `group_by=version`; if the current canonical endpoints are insufficient, that needs a contract amendment before implementation
 
 Ingestion does not need any frontend-specific payload changes for this milestone.
 
@@ -291,7 +292,7 @@ The key proof points for ingestion are:
 - `DD_VERSION` became canonical `version`, defaulting to `""` when absent
 - the required service and runtime metrics were accepted without renaming
 - the `endpoint` dimension was preserved as `endpoint`
-- the `version` field was preserved on milestone metrics so downstream version grouping is possible through canonical query APIs
+- the `version` field was preserved on milestone metrics so downstream systems have canonical version data without inference
 - the metric was written under canonical storage fields, not Datadog field names
 
 ---
@@ -300,3 +301,4 @@ The key proof points for ingestion are:
 
 - If the sample app insists on using a Datadog vendor protocol instead of the canonical `/v1/metrics` JSON API, that would require a separate compatibility decision and should be documented before implementation.
 - `DD_SITE` should be treated as sample-app destination configuration, not as an ingestion schema field.
+- The milestone still needs a contract-consistent source for the service-page versions breakdown. Ingestion preserves canonical `version` on metrics, but this plan does not assume an unstated `group_by=version` capability in the query contract.
