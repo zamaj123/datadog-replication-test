@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node --import tsx src/index.ts",
+    "db:init": "node --import tsx src/scripts/run-clickhouse-migrations.ts",
     "test": "vitest run"
   },
   "dependencies": {
@@ -19,4 +20,3 @@
     "vitest": "^2.1.8"
   }
 }
-

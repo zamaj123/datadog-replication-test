@@ -17,7 +17,7 @@ export class ClickHouseClient {
     this.#config = config;
   }
 
-  async queryJsonEachRow<T>(sql: string): Promise<T[]> {
+  async execute(sql: string): Promise<string> {
     const baseUrl = `http://${this.#config.host}:${this.#config.port}/?database=${encodeURIComponent(this.#config.database)}`;
     const auth = Buffer.from(`${this.#config.user}:${this.#config.password}`).toString("base64");
     const response = await fetch(baseUrl, {
@@ -34,7 +34,11 @@ export class ClickHouseClient {
       throw new Error(`ClickHouse query failed: ${response.status} ${body}`);
     }
 
-    const text = await response.text();
+    return response.text();
+  }
+
+  async queryJsonEachRow<T>(sql: string): Promise<T[]> {
+    const text = await this.execute(sql);
 
     if (!text.trim()) {
       return [];
