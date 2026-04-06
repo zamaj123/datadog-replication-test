@@ -14,7 +14,7 @@ Design and implement storage and query foundations for metrics, logs, and traces
 - [ ] Implementation (Phase 2)
 
 ## Status
-Design updated to conform to `INTERFACES.md`. `apps/storage` now requires ClickHouse configuration for the metrics read path and returns an explicit error instead of synthetic data when that dependency is absent. The canonical `metrics` table DDL and a local ClickHouse schema init script are now present, and the metrics read path now uses exact nanosecond ClickHouse range boundaries while preserving raw-data behavior for auto-selected short ranges, including `step: "raw"` in the short-range response. Broader Phase 2 implementation remains pending.
+Design updated to conform to `INTERFACES.md`. `apps/storage` now requires ClickHouse configuration for the metrics read path and returns an explicit error instead of synthetic data when that dependency is absent. The canonical `metrics` table DDL and a local ClickHouse schema init script are now present, the metrics read path now uses exact nanosecond ClickHouse range boundaries while preserving raw-data behavior for auto-selected short ranges, and the HTTP server now allows the frontend dev origin to call the storage API with `X-Api-Key` over CORS. Broader Phase 2 implementation remains pending.
 
 ## Boundaries
 Allowed: schemas, storage services, indexes, query interfaces
