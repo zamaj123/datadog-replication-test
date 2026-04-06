@@ -50,8 +50,10 @@ Must define contracts with storage before deep implementation.
   - Supporting unit coverage added for the smoke-case builder so the runtime probe uses stable service names, metric names, and time bounds
 - [x] Milestone env-based metrics ingestion plan written to `docs/milestone-env-metrics-ingestion-plan.md`
   - Documents how a separate sample app should emit metrics into the canonical `/v1/metrics` ingestion API
-  - Defines the ingestion-side mapping for `DD_API_KEY`, `DD_SITE`, and `DD_ENV`-style sample-app inputs
+  - Defines the ingestion-side mapping for `DD_API_KEY`, `DD_SITE`, `DD_ENV`, `DD_SERVICE`, and `DD_VERSION`-style sample-app inputs
   - Keeps Datadog-like naming translation at the sample-app / emitter boundary and preserves canonical ingestion-to-storage fields
+  - Aligns the milestone metric set to `service.requests.count`, `service.errors.count`, `service.request.duration`, and the required runtime metrics
+  - Records `endpoint` as the required endpoint dimension key for milestone traffic
   - Records the minimum ingestion work and cross-subsystem assumptions needed to show a real service metrics page for the sample app
 
 ### Blocked on

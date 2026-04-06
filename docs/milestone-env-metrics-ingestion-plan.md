@@ -51,12 +51,13 @@ The sample app should emit metric requests in the existing ingestion format:
         "service.version": "v1"
       },
       "timestamp": 1711234567890,
-      "name": "sample.request.count",
+      "name": "service.requests.count",
       "type": "counter",
       "value": 1,
       "tags": {
-        "route": "/",
-        "method": "GET"
+        "endpoint": "/",
+        "http.method": "GET",
+        "http.status_code": "200"
       }
     }
   ]
@@ -82,18 +83,20 @@ The milestone should support Datadog-like environment names at the sample-app co
 | Sample-app env | Meaning for this milestone | Mapping |
 |---|---|---|
 | `DD_API_KEY` | Shared ingestion API key | Sent as `X-Api-Key` on requests to `/v1/metrics` |
-| `DD_SITE` | Destination for telemetry export | Translated by the sample app or emitter config into the ingestion base URL; not forwarded as telemetry data |
+| `DD_SITE` | Destination for telemetry export | Used as the base URL for `POST /v1/metrics`; not forwarded as telemetry data |
 | `DD_ENV` | Deployment environment | Emitted as `resource["deployment.environment"]`, then normalized by ingestion to `environment` |
+| `DD_SERVICE` | Service identity | Emitted as `resource["service.name"]`, then normalized by ingestion to `service_name` |
+| `DD_VERSION` | Service version | Emitted as `resource["service.version"]`, then normalized by ingestion to `version`; defaults to `""` when absent |
 
 Additional identity still required for a service metrics page:
 
 | Input | Required? | Mapping |
 |---|---|---|
-| service name | yes | Emitted as `resource["service.name"]`, then normalized to `service_name` |
-| version | optional | Emitted as `resource["service.version"]`, then normalized to `version` |
+| service name | yes | Primary source is `DD_SERVICE`, emitted as `resource["service.name"]`, then normalized to `service_name` |
+| version | no | Primary source is `DD_VERSION`, emitted as `resource["service.version"]`, then normalized to `version`; defaults to `""` |
 | host | optional | Emitted as `resource["host.name"]`, then normalized to `host` |
 
-For this milestone, ingestion should not infer `service_name` from `DD_SITE`, hostname, or metric names. The sample app must provide a real service identity field.
+For this milestone, ingestion should not infer `service_name` or `version` from hostname, metric names, or `DD_SITE`. The sample app must provide `DD_SERVICE`, and missing `DD_VERSION` becomes `version = ""`.
 
 ---
 
@@ -106,8 +109,10 @@ Only one translation is needed for Datadog-like naming:
 This is outside the ingestion-to-storage contract:
 
 - `DD_API_KEY` becomes the `X-Api-Key` HTTP header
-- `DD_SITE` becomes the ingestion destination URL used by the sample app or compatibility emitter
+- `DD_SITE` becomes the base URL used by the sample app or emitter for `POST /v1/metrics`
 - `DD_ENV` becomes `resource["deployment.environment"]`
+- `DD_SERVICE` becomes `resource["service.name"]`
+- `DD_VERSION` becomes `resource["service.version"]`, defaulting to omission and therefore `version = ""`
 
 ### 5.2 Ingestion translation
 
@@ -150,6 +155,36 @@ Ingestion should accept metrics from the sample app exactly as allowed by `INTER
 - metric `type` of `gauge`, `counter`, or `histogram`
 - millisecond timestamps from the sample app
 
+The sample app should use the canonical JSON envelope. It should not use a Datadog vendor ingestion protocol or a separate compatibility endpoint.
+
+### 6.1 Required metric set
+
+The sample app must emit these service metrics:
+
+- `service.requests.count`
+- `service.errors.count`
+- `service.request.duration` as a histogram
+
+The sample app must also emit these runtime metrics:
+
+- `runtime.cpu.usage`
+- `runtime.memory.usage`
+- `runtime.heap.used`
+- `runtime.event_loop.delay`
+
+### 6.2 Required dimensions
+
+The milestone assumes these dimensions are available where applicable:
+
+- `endpoint`
+- `http.method`
+- `http.status_code`
+- `version`
+- `environment`
+- `service_name`
+
+For this milestone, the endpoint tag key is `endpoint`.
+
 Ingestion should reject:
 
 - missing or invalid `X-Api-Key`
@@ -167,6 +202,9 @@ This milestone should stay minimal.
 ### 7.1 Required ingestion work
 
 - document the sample-app emission shape and env mapping
+- explicitly document `DD_SERVICE`, `DD_ENV`, `DD_VERSION`, and `DD_SITE` handling
+- keep the sample app on the canonical `/v1/metrics` JSON protocol
+- verify the required milestone metrics and `endpoint` dimension pass through ingestion unchanged
 - verify the current `/v1/metrics` path accepts the sample app’s emitted payload
 - verify the written ClickHouse row shape matches the canonical metrics schema
 - add or keep a deterministic smoke path that proves:
@@ -225,8 +263,8 @@ Ingestion does not need any frontend-specific payload changes for this milestone
 
 The milestone should be considered complete for ingestion when this sequence works:
 
-1. set sample-app env vars using the DD-style names
-2. sample app sends a metric to `/v1/metrics`
+1. set sample-app env vars using `DD_API_KEY`, `DD_SITE`, `DD_ENV`, `DD_SERVICE`, and optional `DD_VERSION`
+2. sample app sends the required milestone metrics to `/v1/metrics`
 3. ingestion accepts and normalizes it
 4. ingestion writes the canonical metric row to ClickHouse
 5. storage returns that metric for the sample app’s `service_name` and `environment`
@@ -235,14 +273,16 @@ The milestone should be considered complete for ingestion when this sequence wor
 The key proof points for ingestion are:
 
 - `DD_API_KEY` was translated into valid `X-Api-Key` auth
+- `DD_SERVICE` became canonical `service_name`
 - `DD_ENV` became canonical `environment`
-- sample-app service identity became canonical `service_name`
+- `DD_VERSION` became canonical `version`, defaulting to `""` when absent
+- the required service and runtime metrics were accepted without renaming
+- the `endpoint` dimension was preserved as `endpoint`
 - the metric was written under canonical storage fields, not Datadog field names
 
 ---
 
 ## 11. Open Issues
 
-- The sample app still needs a concrete service-name input. `DD_ENV` alone is not enough to produce a valid service metrics page.
 - If the sample app insists on using a Datadog vendor protocol instead of the canonical `/v1/metrics` JSON API, that would require a separate compatibility decision and should be documented before implementation.
 - `DD_SITE` should be treated as sample-app destination configuration, not as an ingestion schema field.
