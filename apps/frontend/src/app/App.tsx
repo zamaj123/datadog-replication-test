@@ -1,6 +1,10 @@
-import { MetricsPage } from "../features/metrics/MetricsPage";
+import { ServiceMetricsPage } from "../features/services/ServiceMetricsPage";
+import { ServicesPage } from "../features/services/ServicesPage";
+import { useAppRoute } from "./router";
 
 export function App() {
+  const route = useAppRoute();
+
   return (
     <div className="app-shell">
       <aside className="global-rail">
@@ -27,7 +31,11 @@ export function App() {
       </aside>
 
       <div className="workspace">
-        <MetricsPage />
+        {route.kind === "services" ? (
+          <ServicesPage />
+        ) : (
+          <ServiceMetricsPage serviceName={route.serviceName} />
+        )}
       </div>
     </div>
   );

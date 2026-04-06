@@ -15,6 +15,7 @@ Design and implement the observability UI.
 - [x] Initial metrics scaffold implementation — `apps/frontend`
 - [x] Datadog-like shell styling for current metrics slice — `apps/frontend`
 - [x] Env metrics service-page milestone plan — `docs/milestone-env-metrics-frontend-plan.md`
+- [x] Env metrics milestone implementation — `apps/frontend`
 
 ## Boundaries
 Allowed: frontend app, UI components, page flows, client-side state
@@ -34,4 +35,4 @@ Must depend on documented query APIs and shared field names.
 8. Service summaries come from `GET /api/v1/services` and `GET /api/v1/services/:service_name/summary`
 
 ## Status
-Initial frontend scaffold created in `apps/frontend` with bootstrap, metric names fetch, and metric query rendering aligned to `INTERFACES.md`, including grouped metric query coverage via `group_by`. Milestone planning for env-var-driven service metrics discovery is documented in `docs/milestone-env-metrics-frontend-plan.md` and aligned to the cross-subsystem review guide from PR #37, including its latest review requirement that version-breakdown implementation must wait for an explicit canonical contract source.
+Initial frontend scaffold created in `apps/frontend` with bootstrap, metric names fetch, and metric query rendering aligned to `INTERFACES.md`, including grouped metric query coverage via `group_by`. The env-metrics milestone is now implemented in `apps/frontend` with canonical `/services` discovery and `/services/:service_name` metrics pages backed by `GET /api/v1/environments`, `GET /api/v1/services`, `GET /api/v1/services/:service_name/summary`, `GET /api/v1/metrics/names`, and `GET /api/v1/metrics/query`. Milestone planning remains documented in `docs/milestone-env-metrics-frontend-plan.md`, including the explicit contract blocker that keeps the versions section as a placeholder until `INTERFACES.md` defines a canonical data source.
