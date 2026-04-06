@@ -2,7 +2,7 @@
 
 **Agent:** Frontend  
 **Date:** 2026-04-06  
-**Status:** Planning only
+**Status:** Implemented in `apps/frontend`
 
 ---
 
@@ -17,6 +17,10 @@ Define the minimum frontend milestone needed for a user to:
 5. view a usable service metrics page showing real data for that service
 
 This plan stays strictly within the frontend subsystem. It does not redesign the platform or expand into logs or traces.
+
+Implementation note:
+
+- the current `integration` branch does not include `docs/milestone-env-metrics-review.md`, so the implemented frontend follows the latest PR #37 milestone review decisions reflected in this plan
 
 For this milestone, frontend planning assumes the fixed identity mapping from the cross-subsystem review guide:
 
@@ -77,7 +81,7 @@ This page should show:
 - service identity
 - last seen
 - summary metrics for the current time range
-- version breakdown for the emitted service, derived from canonical metric query labels
+- versions section for the emitted service, with live data blocked until the canonical source is explicit in `INTERFACES.md`
 - one small set of real charts or series views driven by canonical metric queries
 
 The page must feel like a usable service page even if the scope is metrics-only.
@@ -106,6 +110,7 @@ Minimum elements:
 - time range selector
 - services table
 - empty state when no services are found
+- implemented in `apps/frontend` as the default route view
 
 ### 4.2 Service Metrics Page
 
@@ -129,6 +134,7 @@ Minimum elements:
 - Endpoints section
 - Runtime Metrics section
 - empty-state boxes for not-yet-implemented areas
+- implemented in `apps/frontend` as the route selected by `/services/:service_name`
 
 No separate overview dashboard, logs page, trace page, or alert workflow is required for this milestone.
 
@@ -220,9 +226,10 @@ The service page should render real data from:
 - `request_rate_per_sec`
 - `error_rate`
 - `p95_latency_ns`
+- `p99_latency_ns`
 - `last_seen`
-- `log_count = 0`
-- `active_alert_count = 0`
+- `log_count`
+- `active_alert_count`
 - metric `series[].labels`
 - metric `series[].points[]`
 
@@ -239,8 +246,14 @@ For this milestone, the frontend should treat service summary semantics as metri
 - `request_rate_per_sec` from `service.requests.count`
 - `error_rate` from `service.errors.count / service.requests.count`
 - `p95_latency_ns` from `service.request.duration`
-- `log_count = 0`
-- `active_alert_count = 0`
+- `p99_latency_ns` from the canonical service summary response
+- `log_count` displayed from the canonical service summary response
+- `active_alert_count` displayed from the canonical service summary response
+
+Current implementation note:
+
+- the frontend does not synthesize `log_count` or `active_alert_count`; it renders the values returned by `GET /api/v1/services/:service_name/summary` so the UI stays aligned to `INTERFACES.md`
+- the Requests, p95 Latency, Errors, Endpoints, and Runtime Metrics sections are implemented with canonical metric queries in `apps/frontend`
 
 ---
 
@@ -417,7 +430,7 @@ Recommended end-to-end frontend flow:
    - summary from `GET /api/v1/services/:service_name/summary`
    - metric names from `GET /api/v1/metrics/names`
    - initial chart from `GET /api/v1/metrics/query`
-8. User sees version breakdown plus Requests / p95 Latency / Errors / Endpoints / Runtime sections
+8. User sees the versions section placeholder plus Requests / p95 Latency / Errors / Endpoints / Runtime sections
 9. User can switch metrics and confirm live data is present
 
 This is the smallest frontend milestone that proves the pipeline ends in a usable service metrics page.
