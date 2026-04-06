@@ -191,3 +191,25 @@ Prospective review based on standard observability platform patterns. Superseded
   - storage can still run without ClickHouse and silently fall back to fixture metric data
   - storage’s non-metrics query endpoints are still placeholder-only and not backed by real query logic
 - No frontend-only correctness finding was identified in the current metrics slice; the remaining integration blockers are still in ingestion and storage.
+
+### Phase 4 — Milestone review for env-driven metrics sample app (2026-04-06)
+
+**Output:** `docs/milestone-env-metrics-review.md`
+
+**Summary of findings:**
+
+- Reviewed the three milestone plan PRs together:
+  - PR #34 — ingestion
+  - PR #35 — frontend
+  - PR #36 — storage
+- Converted the review output into a concrete alignment guide for the subsystem agents.
+- Fixed milestone decisions captured in the guide:
+  - `DD_SERVICE -> service_name`
+  - `DD_ENV -> environment`
+  - `DD_VERSION -> version`, defaulting to `""` when missing
+  - `DD_SITE -> ingestion base URL`
+  - sample app emits through the canonical `POST /v1/metrics` JSON contract
+  - required metrics are `service.requests.count`, `service.errors.count`, `service.request.duration`, and the four runtime metrics
+  - required routes are `/services` and `/services/:service_name`
+  - service-summary semantics are metrics-backed for this milestone, with `log_count = 0` and `active_alert_count = 0`
+- The remaining work is for ingestion, storage, and frontend to update their milestone plans to match those fixed decisions rather than continuing to drift on endpoint scope or summary semantics.
