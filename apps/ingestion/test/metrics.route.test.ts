@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { MetricsWriter } from "../src/clickhouse/writer";
+import { buildMilestoneMetricCase } from "../src/scripts/milestone-env-metrics-lib";
 import { buildApp } from "../src/server/app";
 
 class RecordingWriter implements MetricsWriter {
   public rowsWritten = 0;
+  public rows: Parameters<MetricsWriter["writeMetrics"]>[0] = [];
 
   async writeMetrics(rows: Parameters<MetricsWriter["writeMetrics"]>[0]): Promise<void> {
     this.rowsWritten += rows.length;
+    this.rows.push(...rows);
   }
 }
 
@@ -77,6 +80,43 @@ describe("POST /v1/metrics", () => {
     expect(response.statusCode).toBe(202);
     expect(response.json()).toEqual({ accepted: 1, rejected: 0 });
     expect(writer.rowsWritten).toBe(1);
+    await app.close();
+  });
+
+  it("accepts the milestone metric payload and writes the expected canonical rows", async () => {
+    const writer = new RecordingWriter();
+    const app = await buildApp({
+      env: testEnv,
+      metricsWriter: writer
+    });
+    const milestone = buildMilestoneMetricCase(
+      {
+        apiKey: "secret",
+        environment: "production",
+        serviceName: "checkout-api",
+        site: "http://localhost:3001",
+        version: "",
+      },
+      1_711_234_567_890,
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/metrics",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "secret"
+      },
+      payload: milestone.payload
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ accepted: 7, rejected: 0 });
+    expect(writer.rowsWritten).toBe(11);
+    expect(writer.rows.every((row) => row.service_name === "checkout-api")).toBe(true);
+    expect(writer.rows.every((row) => row.environment === "production")).toBe(true);
+    expect(writer.rows.every((row) => row.version === "")).toBe(true);
+    expect(writer.rows.filter((row) => row.name === "service.request.duration")).toHaveLength(3);
     await app.close();
   });
 

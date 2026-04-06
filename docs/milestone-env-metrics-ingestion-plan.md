@@ -232,6 +232,13 @@ If a tiny ingestion-owned helper is needed for local milestone validation, it sh
 
 It should not introduce a second ingestion protocol.
 
+Current implementation follows this path:
+
+- `apps/ingestion/src/scripts/milestone-env-metrics-lib.ts` builds the required milestone metric batch from `DD_API_KEY`, `DD_SITE`, `DD_ENV`, `DD_SERVICE`, and `DD_VERSION`
+- `apps/ingestion/src/scripts/milestone-env-metrics-smoke.ts` submits that canonical batch to `/v1/metrics` and verifies the written ClickHouse rows
+
+This stays within ingestion ownership because it validates ingestion acceptance and ClickHouse writes only. It does not introduce a new ingestion API shape.
+
 ---
 
 ## 8. Assumptions From Storage
@@ -294,6 +301,7 @@ The key proof points for ingestion are:
 - the `endpoint` dimension was preserved as `endpoint`
 - the `version` field was preserved on milestone metrics so downstream systems have canonical version data without inference
 - the metric was written under canonical storage fields, not Datadog field names
+- the ingestion-owned smoke helper can submit the full milestone metric set from DD-style env inputs and confirm the expected ClickHouse rows exist
 
 ---
 
