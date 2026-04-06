@@ -13,6 +13,7 @@ Design and implement the observability UI.
 - [x] Contract alignment to `INTERFACES.md` — `docs/frontend-design.md`
 - [x] Implementation scaffold plan — `docs/frontend-implementation-plan.md`
 - [x] Initial metrics scaffold implementation — `apps/frontend`
+- [x] Datadog-like shell styling for current metrics slice — `apps/frontend`
 
 ## Boundaries
 Allowed: frontend app, UI components, page flows, client-side state

@@ -25,57 +25,69 @@ export function MetricNamesPanel(props: MetricNamesPanelProps) {
   } = props;
 
   return (
-    <section className="panel">
-      <div className="panel__header">
-        <div>
-          <h2>Metric Names</h2>
-          <p>Calls <code>GET /api/v1/metrics/names</code>.</p>
+    <section className="metric-table">
+      <div className="metric-table__header">
+        <div className="metric-table__filters">
+          <label>
+            <span>environment</span>
+            <input
+              value={request.environment ?? ""}
+              onChange={(event) =>
+                setRequest((current) => ({ ...current, environment: event.target.value || undefined }))
+              }
+              placeholder="production"
+            />
+          </label>
+          <label>
+            <span>service_name</span>
+            <input
+              value={request.service_name ?? ""}
+              onChange={(event) =>
+                setRequest((current) => ({ ...current, service_name: event.target.value || undefined }))
+              }
+              placeholder="api-server"
+            />
+          </label>
         </div>
-        <button type="button" onClick={onReload} disabled={isLoading}>
+        <button type="button" className="table-options" onClick={onReload} disabled={isLoading}>
           {isLoading ? "Loading..." : "Reload"}
         </button>
       </div>
 
-      <div className="form-grid">
-        <label>
-          <span>environment</span>
-          <input
-            value={request.environment ?? ""}
-            onChange={(event) =>
-              setRequest((current) => ({ ...current, environment: event.target.value || undefined }))
-            }
-            placeholder="production"
-          />
-        </label>
-        <label>
-          <span>service_name</span>
-          <input
-            value={request.service_name ?? ""}
-            onChange={(event) =>
-              setRequest((current) => ({ ...current, service_name: event.target.value || undefined }))
-            }
-            placeholder="api-server"
-          />
-        </label>
-      </div>
-
       {error ? <p className="error">{error}</p> : null}
 
-      <ul className="metric-list">
-        {(data?.names ?? []).map((name) => (
-          <li key={name}>
-            <button
-              type="button"
-              className={name === selectedMetricName ? "metric-chip metric-chip--active" : "metric-chip"}
-              onClick={() => onSelectMetricName(name)}
-            >
-              {name}
-            </button>
-          </li>
-        ))}
+      <div className="metric-table__columns">
+        <span>METRIC NAME</span>
+        <span>QUERY STATUS</span>
+        <span>SELECTION</span>
+      </div>
+
+      <ul className="metric-table__rows">
+        {(data?.names ?? []).map((name) => {
+          const isSelected = name === selectedMetricName;
+
+          return (
+            <li key={name} className="metric-row">
+              <span className="metric-row__name">{name}</span>
+              <span className="metric-row__status">GET /api/v1/metrics/names</span>
+              <button
+                type="button"
+                className={isSelected ? "metric-chip metric-chip--active" : "metric-chip"}
+                onClick={() => onSelectMetricName(name)}
+              >
+                {isSelected ? "Selected" : "Select"}
+              </button>
+            </li>
+          );
+        })}
       </ul>
 
-      {!isLoading && data && data.names.length === 0 ? <p>No metric names returned.</p> : null}
+      {!isLoading && data && data.names.length === 0 ? (
+        <div className="metric-table__empty">
+          <div className="metric-table__empty-icon">!</div>
+          <p>No metric names returned for the current filters.</p>
+        </div>
+      ) : null}
     </section>
   );
 }
