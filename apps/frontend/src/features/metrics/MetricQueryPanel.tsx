@@ -6,6 +6,7 @@ import type {
 } from "../../lib/api/types";
 
 interface MetricQueryPanelProps {
+  title: string;
   request: MetricQueryRequest;
   setRequest: (request: MetricQueryRequest) => void;
   data: MetricQueryResponse | null;
@@ -41,7 +42,7 @@ function renderSeries(series: MetricQuerySeries, index: number) {
 }
 
 export function MetricQueryPanel(props: MetricQueryPanelProps) {
-  const { request, setRequest, data, error, isLoading, onSubmit } = props;
+  const { title, request, setRequest, data, error, isLoading, onSubmit } = props;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -50,15 +51,15 @@ export function MetricQueryPanel(props: MetricQueryPanelProps) {
 
   return (
     <section className="panel">
-      <div className="panel__header">
+      <div className="chart-card__header">
         <div>
-          <h2>Metric Query</h2>
-          <p>Calls <code>GET /api/v1/metrics/query</code>.</p>
+          <h3>{title}</h3>
+          <span>Top 5</span>
         </div>
       </div>
 
-      <form className="query-form" onSubmit={handleSubmit}>
-        <div className="form-grid">
+      <form className="query-form query-form--compact" onSubmit={handleSubmit}>
+        <div className="query-form__row">
           <label>
             <span>name</span>
             <input
@@ -66,46 +67,6 @@ export function MetricQueryPanel(props: MetricQueryPanelProps) {
               value={request.name}
               onChange={(event) => setRequest({ ...request, name: event.target.value })}
               placeholder="http.request.duration"
-            />
-          </label>
-          <label>
-            <span>agg</span>
-            <input
-              value={request.agg ?? ""}
-              onChange={(event) => setRequest({ ...request, agg: event.target.value || undefined })}
-              placeholder="avg"
-            />
-          </label>
-          <label>
-            <span>step</span>
-            <input
-              value={request.step ?? ""}
-              onChange={(event) => setRequest({ ...request, step: event.target.value || undefined })}
-              placeholder="1m"
-            />
-          </label>
-          <label>
-            <span>environment</span>
-            <input
-              value={request.environment ?? ""}
-              onChange={(event) => setRequest({ ...request, environment: event.target.value || undefined })}
-              placeholder="production"
-            />
-          </label>
-          <label>
-            <span>service_name</span>
-            <input
-              value={request.service_name ?? ""}
-              onChange={(event) => setRequest({ ...request, service_name: event.target.value || undefined })}
-              placeholder="api-server"
-            />
-          </label>
-          <label>
-            <span>group_by</span>
-            <input
-              value={request.group_by ?? ""}
-              onChange={(event) => setRequest({ ...request, group_by: event.target.value || undefined })}
-              placeholder="service_name,http.method"
             />
           </label>
           <label>
@@ -125,16 +86,61 @@ export function MetricQueryPanel(props: MetricQueryPanelProps) {
             />
           </label>
         </div>
+        <div className="query-form__row">
+          <label>
+            <span>environment</span>
+            <input
+              value={request.environment ?? ""}
+              onChange={(event) => setRequest({ ...request, environment: event.target.value || undefined })}
+              placeholder="production"
+            />
+          </label>
+          <label>
+            <span>service_name</span>
+            <input
+              value={request.service_name ?? ""}
+              onChange={(event) => setRequest({ ...request, service_name: event.target.value || undefined })}
+              placeholder="api-server"
+            />
+          </label>
+          <label>
+            <span>agg</span>
+            <input
+              value={request.agg ?? ""}
+              onChange={(event) => setRequest({ ...request, agg: event.target.value || undefined })}
+              placeholder="avg"
+            />
+          </label>
+          <label>
+            <span>group_by</span>
+            <input
+              value={request.group_by ?? ""}
+              onChange={(event) => setRequest({ ...request, group_by: event.target.value || undefined })}
+              placeholder="service_name,http.method"
+            />
+          </label>
+          <label>
+            <span>step</span>
+            <input
+              value={request.step ?? ""}
+              onChange={(event) => setRequest({ ...request, step: event.target.value || undefined })}
+              placeholder="1m"
+            />
+          </label>
+        </div>
 
-        <button type="submit" disabled={isLoading}>
+        <div className="query-form__actions">
+          <button type="submit" disabled={isLoading}>
           {isLoading ? "Loading..." : "Run Query"}
-        </button>
+          </button>
+          <code className="query-endpoint">GET /api/v1/metrics/query</code>
+        </div>
       </form>
 
       {error ? <p className="error">{error}</p> : null}
 
       {data ? (
-        <div className="results">
+        <div className="chart-results">
           <div className="results__meta">
             <span><strong>name:</strong> {data.name}</span>
             <span><strong>step:</strong> {data.step}</span>
@@ -142,14 +148,14 @@ export function MetricQueryPanel(props: MetricQueryPanelProps) {
             <span><strong>truncated:</strong> {String(data.truncated)}</span>
           </div>
 
-          <ul className="series-list">
+          <ul className="series-list series-list--tight">
             {data.series.map(renderSeries)}
           </ul>
 
           {data.series.length === 0 ? <p>No series returned.</p> : null}
         </div>
       ) : (
-        <p>Submit a query to render the returned metric series.</p>
+        <div className="empty-chart" />
       )}
     </section>
   );
