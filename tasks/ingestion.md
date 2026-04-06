@@ -58,6 +58,10 @@ Must define contracts with storage before deep implementation.
   - Aligns milestone downstream assumptions to the current service-endpoint contract (`/services` uses `p99_latency_ns` and does not include `active_alert_count`)
   - Avoids assuming unstated query-contract behavior such as implicit `group_by=version` for the versions breakdown
   - Records the minimum ingestion work and cross-subsystem assumptions needed to show a real service metrics page for the sample app
+- [x] Milestone env-metrics ingestion validation implemented
+  - Added an ingestion-owned DD-style emitter helper for the required milestone metric set
+  - Added a milestone smoke script that posts canonical metrics to `/v1/metrics` and verifies the written ClickHouse rows
+  - Added route and pipeline coverage proving ingestion accepts the milestone payload, preserves canonical identity fields, and expands histogram rows correctly
 
 ### Blocked on
 - No ingestion-specific contract blockers remain for Phase 2 design work; `INTERFACES.md` is the authority for implementation.
@@ -68,4 +72,4 @@ Must define contracts with storage before deep implementation.
 - Expand test coverage for request-envelope failures and writer failure paths
 - End-to-end test with a Node.js OTel emitter and canonical row verification
 - Expand the smoke validation beyond metrics once logs and traces move beyond placeholder routes
-- Validate the milestone path with a separate sample app using DD-style env names mapped into the canonical metrics ingestion contract
+- Clear the remaining cross-subsystem contract gap for service-page versions breakdown without assuming unsupported query grouping behavior
